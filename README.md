@@ -6,6 +6,7 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
+[![LINUX DO](https://img.shields.io/badge/%E7%A4%BE%E5%8C%BA-LINUX%20DO-1f6feb)](https://linux.do)
 
 ![看板预览](docs/screenshot.png)
 
@@ -25,6 +26,7 @@
 - [数据与备份](#数据与备份)
 - [常见问题](#常见问题)
 - [安全提醒](#安全提醒)
+- [社区](#社区)
 - [免责声明](#免责声明)
 
 ## 为什么需要抓一次包
@@ -574,6 +576,12 @@ htpasswd -c /etc/nginx/.htpasswd youruser
 ```
 
 另外，接口响应里**不会**返回 token 原文、User-Agent 和 api-key，只给形如 `a1b2c3...c5d6` 的掩码。
+
+## 社区
+
+项目在 [LINUX DO](https://linux.do) 社区交流，欢迎在那里发帖讨论。
+
+用法问题、龙湖改版导致接口失效、或者想加新功能，都可以直接开 [Issue](https://github.com/ken861222/longhu-checkin/issues)，也欢迎提 PR。
 
 ## 免责声明
 
