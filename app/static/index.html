@@ -207,10 +207,10 @@
       <input type="time" id="setTime">
     </div>
     <div class="field">
-      <label>告警 Webhook（企业微信 / 钉钉机器人，可留空）</label>
-      <input type="text" id="setWebhook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...">
+      <label>告警推送地址（Bark / 企业微信 / 钉钉，可留空）</label>
+      <input type="text" id="setWebhook" placeholder="https://api.day.app/你的DeviceKey">
     </div>
-    <div class="tips">续期失败或签到失败时推一条消息，避免静默失效。</div>
+    <div class="tips">续期或签到失败时推一条消息，避免静默失效。<br>Bark 填 <code>https://api.day.app/DeviceKey</code>（自建服务填你的域名/key）；企业微信填群机器人 webhook 地址。类型自动识别，不用选。</div>
     <div class="dialog-foot">
       <button id="btnCancelSet" class="ghost">取消</button>
       <button id="btnSaveSet" class="primary">保存</button>
