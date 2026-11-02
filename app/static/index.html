@@ -103,10 +103,12 @@
   .dialog .hint { color: var(--dim); font-size: 12.5px; margin-bottom: 16px; }
   .field { margin-bottom: 14px; }
   .field label { display: block; font-size: 12.5px; color: var(--dim); margin-bottom: 6px; }
-  input[type=text], textarea, input[type=time] {
+  input[type=text], textarea, input[type=time], input[type=number] {
     width: 100%; background: #0d1015; border: 1px solid var(--line); border-radius: 10px;
     color: var(--text); padding: 10px 12px; font: inherit; outline: none; transition: .15s;
   }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
   input:focus, textarea:focus { border-color: #3a4a66; box-shadow: 0 0 0 3px rgba(77,139,254,.12); }
   textarea { resize: vertical; min-height: 132px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.5; }
 
@@ -201,11 +203,16 @@
 <div class="modal" id="modalSettings">
   <div class="dialog">
     <h3>设置</h3>
-    <div class="hint">每天到点自动跑一轮：续期 + 签到 + 刷新状态。</div>
+    <div class="hint">每天在下面的窗口里随机挑一个时刻，自动跑一轮：续期 + 签到 + 刷新状态。</div>
     <div class="field">
-      <label>签到时间</label>
+      <label>签到窗口起点</label>
       <input type="time" id="setTime">
     </div>
+    <div class="field">
+      <label>随机浮动（分钟，0 = 固定时刻）</label>
+      <input type="number" id="setJitter" min="0" max="1439" step="5" placeholder="60">
+    </div>
+    <div class="tips" id="setWindowTip">实际执行时间 = 起点 + 0～N 分钟内的随机值，每天都不同，避免固定时刻被风控识别。默认起点 08:00、浮动 60 分钟，即每天落在 08:00–09:00 之间。</div>
     <div class="field">
       <label>告警推送地址（Bark / 企业微信 / 钉钉，可留空）</label>
       <input type="text" id="setWebhook" placeholder="https://api.day.app/你的DeviceKey">
@@ -428,21 +435,41 @@ $("accounts").addEventListener("click", async (ev) => {
   }
 });
 
+function windowLabel() {
+  const text = $("setTime").value || "08:00";
+  const [h, m] = text.split(":").map(Number);
+  const jitter = Math.max(0, Math.min(1439, parseInt($("setJitter").value || "0", 10) || 0));
+  const pad = (n) => String(n).padStart(2, "0");
+  const start = `${pad(h)}:${pad(m)}`;
+  if (!jitter) return start;
+  const endTotal = (h * 60 + m + jitter) % 1440;
+  return `${start}–${pad(Math.floor(endTotal / 60))}:${pad(endTotal % 60)}`;
+}
+function updateWindowTip() {
+  $("setWindowTip").textContent =
+    `实际执行时间 = 起点 + 0～N 分钟内的随机值，每天都不同，避免固定时刻被风控识别。当前窗口 ${windowLabel()}。`;
+}
+
 $("btnSettings").onclick = async () => {
   try {
     const s = await api("/api/settings");
-    $("setTime").value = s.checkin_time || "08:05";
+    $("setTime").value = s.checkin_time || "08:00";
+    $("setJitter").value = s.checkin_jitter ?? "60";
     $("setWebhook").value = s.webhook_url || "";
+    updateWindowTip();
     $("modalSettings").classList.add("show");
   } catch (e) {
     toast(e.message, true);
   }
 };
+$("setTime").oninput = updateWindowTip;
+$("setJitter").oninput = updateWindowTip;
 $("btnCancelSet").onclick = () => $("modalSettings").classList.remove("show");
 
 $("btnSaveSet").onclick = async () => {
   const fd = new FormData();
-  fd.append("checkin_time", $("setTime").value || "08:05");
+  fd.append("checkin_time", $("setTime").value || "08:00");
+  fd.append("checkin_jitter", $("setJitter").value.trim());
   fd.append("webhook_url", $("setWebhook").value.trim());
   try {
     await api("/api/settings", { method: "POST", body: fd });

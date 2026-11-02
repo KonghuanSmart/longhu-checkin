@@ -50,7 +50,9 @@ CREATE INDEX IF NOT EXISTS idx_logs_acc ON logs(account_id, id DESC);
 """
 
 DEFAULT_SETTINGS = {
-    "checkin_time": "08:05",
+    "checkin_time": "08:00",
+    "checkin_jitter": "60",
+    "last_run_date": "",
     "webhook_url": "",
     "auto_refresh": "1",
 }

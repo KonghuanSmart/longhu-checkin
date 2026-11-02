@@ -26,7 +26,7 @@ STATIC_DIR = BASE_DIR / "static"
 async def lifespan(_: FastAPI):
     db.init()
     scheduler.start()
-    logger.info("服务已启动，签到时间 %s", db.get_settings().get("checkin_time"))
+    logger.info("服务已启动，签到窗口 %s", scheduler.window_text())
     yield
 
 
@@ -197,7 +197,9 @@ def api_logs(limit: int = 50):
 def api_get_settings():
     data = db.get_settings()
     return {
-        "checkin_time": data.get("checkin_time", "08:05"),
+        "checkin_time": data.get("checkin_time", "08:00"),
+        "checkin_jitter": data.get("checkin_jitter", "60"),
+        "window": scheduler.window_text(),
         "webhook_url": data.get("webhook_url", ""),
         "next_run": scheduler.next_run_text(),
     }
@@ -207,6 +209,7 @@ def api_get_settings():
 def api_save_settings(
     checkin_time: str = Form(...),
     webhook_url: str = Form(""),
+    checkin_jitter: str | None = Form(None),
 ):
     try:
         hour, minute = checkin_time.split(":")
@@ -214,9 +217,22 @@ def api_save_settings(
     except Exception:
         raise HTTPException(400, "时间格式应为 HH:MM") from None
 
-    db.save_settings({"checkin_time": checkin_time, "webhook_url": webhook_url.strip()})
+    values = {"checkin_time": checkin_time, "webhook_url": webhook_url.strip()}
+    if checkin_jitter is not None and checkin_jitter.strip() != "":
+        try:
+            jitter = int(float(checkin_jitter))
+            assert 0 <= jitter <= 1439
+        except Exception:
+            raise HTTPException(400, "随机浮动应为 0–1439 之间的分钟数") from None
+        values["checkin_jitter"] = str(jitter)
+
+    db.save_settings(values)
     scheduler.reschedule()
-    return {"ok": True, "next_run": scheduler.next_run_text()}
+    return {
+        "ok": True,
+        "window": scheduler.window_text(),
+        "next_run": scheduler.next_run_text(),
+    }
 
 
 @app.get("/api/health")

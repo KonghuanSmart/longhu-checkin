@@ -1,27 +1,42 @@
-"""定时调度：每天固定时间跑一轮签到。时间可在前端改，改完立即生效。"""
+"""定时调度：每天在一个时间窗口内随机取一个时刻跑一轮签到，每天都不一样。
+
+窗口 = [签到窗口起点, 起点 + 随机浮动分钟)。默认 08:00 起浮动 60 分钟，
+即每天落在 08:00–09:00 之间的某一分某一秒，避免固定时刻被风控识别。
+浮动填 0 就退化成原来的固定时间。
+
+实现上不用 cron（cron 只支持固定值），而是每天排一个一次性任务，
+再由一个每 10 分钟的巡场任务补齐下一次，保证任务执行完就能排上下一天。
+"""
 
 import logging
-from datetime import datetime
+import random
+from datetime import datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 
 from . import db, runner
 
 logger = logging.getLogger(__name__)
 
 JOB_ID = "daily_checkin"
+PLANNER_ID = "daily_planner"
+DEFAULT_TIME = "08:00"
+DEFAULT_JITTER = 60
+
 scheduler = BackgroundScheduler(timezone="Asia/Shanghai")
 
 
-def _job():
-    logger.info("定时任务开始执行")
-    results = runner.run_all()
-    runner.daily_summary(results)
-    logger.info("定时任务完成，共 %d 个账号", len(results))
+def _now() -> datetime:
+    return datetime.now(scheduler.timezone)
 
 
-def _parse_time(text: str) -> tuple[int, int]:
+def _today_text() -> str:
+    return _now().strftime("%Y-%m-%d")
+
+
+def _parse_hhmm(text: str) -> tuple[int, int]:
     try:
         hour, minute = text.split(":")
         hour, minute = int(hour), int(minute)
@@ -29,22 +44,113 @@ def _parse_time(text: str) -> tuple[int, int]:
             return hour, minute
     except Exception:
         pass
-    return 8, 5
+    return 8, 0
+
+
+def _config(settings: dict | None = None) -> tuple[int, int, int]:
+    """返回 (窗口起点小时, 分钟, 随机浮动分钟)。"""
+    settings = settings if settings is not None else db.get_settings()
+    hour, minute = _parse_hhmm(settings.get("checkin_time") or DEFAULT_TIME)
+    try:
+        jitter = int(float(settings.get("checkin_jitter") or 0))
+    except (TypeError, ValueError):
+        jitter = DEFAULT_JITTER
+    return hour, minute, max(0, min(jitter, 1439))
+
+
+def window_text() -> str:
+    """给前端显示的窗口描述，如 08:00–09:00。"""
+    hour, minute, jitter = _config()
+    start = f"{hour:02d}:{minute:02d}"
+    if jitter <= 0:
+        return start
+    end = _now().replace(hour=hour, minute=minute, second=0, microsecond=0) + timedelta(minutes=jitter)
+    return f"{start}–{end.strftime('%H:%M')}"
+
+
+def _pick_next() -> datetime:
+    """算出下一次签到的具体时刻，落在当前或下一个窗口内的随机一点。"""
+    settings = db.get_settings()
+    hour, minute, jitter = _config(settings)
+    now = _now()
+
+    start = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    end = start + timedelta(minutes=jitter)
+
+    if settings.get("last_run_date") == _today_text() or now >= end:
+        start += timedelta(days=1)
+        end += timedelta(days=1)
+        base = start
+    elif now <= start:
+        base = start
+    else:
+        base = now
+
+    span = int((end - base).total_seconds())
+    if span <= 0:
+        return base
+    return base + timedelta(seconds=random.randint(0, span - 1))
+
+
+def _job():
+    try:
+        logger.info("定时任务开始执行")
+        results = runner.run_all()
+        runner.daily_summary(results)
+        logger.info("定时任务完成，共 %d 个账号", len(results))
+    except Exception:
+        logger.exception("定时任务执行失败")
+    finally:
+        try:
+            db.save_settings({"last_run_date": _today_text()})
+        except Exception:
+            logger.exception("记录执行日期失败")
+
+
+def _ensure_scheduled(force: bool = False) -> datetime | None:
+    """保证总有一个待执行的签到任务；force=True 时按当前设置重建。"""
+    job = scheduler.get_job(JOB_ID)
+    if job and job.next_run_time and not force:
+        return job.next_run_time
+
+    when = _pick_next()
+    scheduler.add_job(
+        _job,
+        DateTrigger(run_date=when),
+        id=JOB_ID,
+        replace_existing=True,
+        misfire_grace_time=1800,
+        coalesce=True,
+    )
+    logger.info("下次签到：%s", when.strftime("%Y-%m-%d %H:%M:%S"))
+    return when
+
+
+def _planner():
+    """巡场：签到任务是一次性的，跑完就被移除了，这里负责补上下一次。"""
+    try:
+        _ensure_scheduled()
+    except Exception:
+        logger.exception("重排签到任务失败")
 
 
 def reschedule():
-    """按当前设置重建定时任务。"""
-    text = db.get_settings().get("checkin_time", "08:05")
-    hour, minute = _parse_time(text)
+    """按当前设置重建排程，改完立即生效。"""
     scheduler.add_job(
-        _job,
-        CronTrigger(hour=hour, minute=minute),
-        id=JOB_ID,
+        _planner,
+        CronTrigger(minute="*/10"),
+        id=PLANNER_ID,
         replace_existing=True,
-        misfire_grace_time=3600,
         coalesce=True,
+        max_instances=1,
     )
-    logger.info("签到时间已设为每天 %02d:%02d", hour, minute)
+    when = _ensure_scheduled(force=True)
+    hour, minute, jitter = _config()
+    logger.info(
+        "签到窗口 %02d:%02d 起浮动 %d 分钟，下次 %s",
+        hour, minute, jitter,
+        when.strftime("%Y-%m-%d %H:%M:%S") if when else "—",
+    )
 
 
 def start():
