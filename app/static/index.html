@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>龙湖签到</title>
+<style>
+  :root {
+    --bg: #0b0d11;
+    --card: #14171d;
+    --card-2: #191d25;
+    --line: #242a34;
+    --text: #e9edf4;
+    --dim: #8b95a6;
+    --gold: #f0b429;
+    --blue: #4d8bfe;
+    --green: #3fb950;
+    --red: #f85149;
+    --amber: #d9a536;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(900px 500px at 15% -10%, #1a2233 0%, transparent 60%), var(--bg);
+    color: var(--text);
+    font: 14px/1.6 -apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+    min-height: 100vh;
+    padding-bottom: 60px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 28px 20px; }
+
+  header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 26px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 10px; font-size: 19px; font-weight: 600; letter-spacing: .3px; }
+  .brand .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 12px var(--gold); }
+  .actions { display: flex; gap: 10px; }
+
+  button {
+    font: inherit; cursor: pointer; border-radius: 10px; border: 1px solid var(--line);
+    background: var(--card-2); color: var(--text); padding: 8px 15px; transition: .16s;
+  }
+  button:hover { border-color: #39414f; background: #1e2430; }
+  button.primary { background: linear-gradient(180deg, #f3bd3f, #dea01d); color: #2a1d00; border-color: #e5ad2c; font-weight: 600; }
+  button.primary:hover { filter: brightness(1.07); }
+  button.ghost { background: transparent; }
+  button.danger { color: var(--red); border-color: #3a2226; background: #1d1416; }
+  button.small { padding: 5px 11px; font-size: 13px; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+
+  .overview { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 26px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 15px 17px; }
+  .stat .label { color: var(--dim); font-size: 12.5px; }
+  .stat .value { font-size: 23px; font-weight: 600; margin-top: 3px; letter-spacing: .5px; }
+  .stat .value small { font-size: 12px; color: var(--dim); font-weight: 400; margin-left: 3px; }
+
+  h2 { font-size: 15px; font-weight: 600; color: #b9c2d0; margin: 0 0 13px; letter-spacing: .4px; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(310px, 1fr)); gap: 14px; margin-bottom: 32px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; position: relative; overflow: hidden; }
+  .card::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 2px; background: linear-gradient(90deg, transparent, var(--gold), transparent); opacity: .35; }
+  .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 15px; }
+  .card-name { font-size: 16px; font-weight: 600; }
+  .card-sub { color: var(--dim); font-size: 12px; margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
+
+  .badge { font-size: 11.5px; padding: 3px 9px; border-radius: 20px; white-space: nowrap; border: 1px solid transparent; }
+  .b-ok { color: var(--green); background: #12251a; border-color: #1d3a28; }
+  .b-already { color: #7ba7e8; background: #121c2b; border-color: #1d2c42; }
+  .b-fail { color: var(--red); background: #261316; border-color: #3d1f23; }
+  .b-pending { color: var(--amber); background: #241d10; border-color: #3a2f18; }
+
+  .metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 15px; }
+  .metric .k { color: var(--dim); font-size: 11.5px; }
+  .metric .v { font-size: 17px; font-weight: 600; margin-top: 1px; }
+  .metric .v.gold { color: var(--gold); }
+
+  .bar-label { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--dim); margin-bottom: 5px; }
+  .bar { height: 5px; background: #1e232c; border-radius: 4px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; border-radius: 4px; background: linear-gradient(90deg, #2fa04a, #4bbd67); transition: width .4s; }
+  .bar.warn > i { background: linear-gradient(90deg, #c98a1c, #e5b23c); }
+  .bar.danger > i { background: linear-gradient(90deg, #c0332c, #ef5b53); }
+
+  .card-foot { display: flex; gap: 8px; margin-top: 15px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .card-foot .msg { flex: 1; font-size: 12px; color: var(--dim); align-self: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .empty { border: 1px dashed var(--line); border-radius: var(--radius); padding: 44px 20px; text-align: center; color: var(--dim); }
+  .empty b { display: block; color: var(--text); margin-bottom: 6px; font-size: 15px; }
+
+  .logs { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+  .log-row { display: grid; grid-template-columns: 118px 96px 66px 1fr; gap: 12px; padding: 10px 16px; font-size: 12.5px; border-bottom: 1px solid #1b2029; align-items: center; }
+  .log-row:last-child { border-bottom: 0; }
+  .log-row .t { color: var(--dim); font-family: ui-monospace, Menlo, monospace; font-size: 11.5px; }
+  .log-row .n { color: #c3cbd8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .log-row .a { color: var(--dim); }
+  .log-row .m { color: #9aa5b6; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .s-ok { color: var(--green); }
+  .s-fail { color: var(--red); }
+  .s-already { color: #7ba7e8; }
+
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.66); backdrop-filter: blur(4px); display: none; align-items: center; justify-content: center; padding: 20px; z-index: 50; }
+  .modal.show { display: flex; }
+  .dialog { background: #12151b; border: 1px solid var(--line); border-radius: 16px; width: 100%; max-width: 560px; max-height: 88vh; overflow-y: auto; padding: 22px; }
+  .dialog h3 { margin: 0 0 4px; font-size: 17px; }
+  .dialog .hint { color: var(--dim); font-size: 12.5px; margin-bottom: 16px; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-size: 12.5px; color: var(--dim); margin-bottom: 6px; }
+  input[type=text], textarea, input[type=time] {
+    width: 100%; background: #0d1015; border: 1px solid var(--line); border-radius: 10px;
+    color: var(--text); padding: 10px 12px; font: inherit; outline: none; transition: .15s;
+  }
+  input:focus, textarea:focus { border-color: #3a4a66; box-shadow: 0 0 0 3px rgba(77,139,254,.12); }
+  textarea { resize: vertical; min-height: 132px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.5; }
+
+  .tabs { display: flex; gap: 6px; background: #0d1015; padding: 4px; border-radius: 11px; border: 1px solid var(--line); margin-bottom: 16px; }
+  .tabs button { flex: 1; border: 0; background: transparent; padding: 7px; font-size: 13px; color: var(--dim); border-radius: 8px; }
+  .tabs button.active { background: #1e2530; color: var(--text); }
+
+  .dialog-foot { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
+  .tips { background: #101720; border: 1px solid #1d2a3a; border-radius: 10px; padding: 11px 13px; font-size: 12px; color: #8fa4bd; line-height: 1.65; margin-bottom: 14px; }
+  .tips code { background: #1a2330; padding: 1px 5px; border-radius: 4px; font-size: 11.5px; color: #a8c0dd; }
+
+  #toast { position: fixed; left: 50%; bottom: 34px; transform: translateX(-50%) translateY(20px); background: #1c222c; border: 1px solid var(--line); color: var(--text); padding: 11px 20px; border-radius: 11px; opacity: 0; pointer-events: none; transition: .25s; z-index: 100; font-size: 13px; max-width: 88vw; }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.err { border-color: #4a2226; color: #ff9d96; }
+
+  .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid #ffffff33; border-top-color: #fff; border-radius: 50%; animation: rot .7s linear infinite; vertical-align: -1px; margin-right: 6px; }
+  @keyframes rot { to { transform: rotate(360deg); } }
+
+  @media (max-width: 640px) {
+    .wrap { padding: 18px 14px; }
+    .log-row { grid-template-columns: 1fr auto; gap: 4px 10px; }
+    .log-row .t { grid-column: 1; }
+    .log-row .m { grid-column: 1 / -1; }
+    .log-row .a, .log-row .n { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand"><span class="dot"></span>龙湖签到</div>
+    <div class="actions">
+      <button id="btnSettings" class="ghost">设置</button>
+      <button id="btnAdd" class="primary">添加账号</button>
+    </div>
+  </header>
+
+  <section class="overview" id="overview"></section>
+
+  <h2>账号</h2>
+  <div id="accounts" class="grid"></div>
+
+  <h2>最近日志</h2>
+  <div class="logs" id="logs"></div>
+</div>
+
+<!-- 添加账号 -->
+<div class="modal" id="modalAdd">
+  <div class="dialog">
+    <h3>添加账号</h3>
+    <div class="hint">凭据只需导入一次，之后 token 会自动续期，不会再过期。</div>
+
+    <div class="tabs">
+      <button data-mode="curl" class="active">粘贴 cURL</button>
+      <button data-mode="har">上传 HAR</button>
+      <button data-mode="token">直接填 token</button>
+    </div>
+
+    <div id="tipCurl" class="tips">
+      在 Proxyman 里选中签到请求 → 右键 <code>Copy as cURL</code> → 粘贴到下面。
+    </div>
+    <div id="tipHar" class="tips" style="display:none">
+      在 Proxyman 里选中 <code>gw2c-hw-open.longfor.com</code> → 导出 HAR → 上传，会自动挑出带 token 的请求。
+    </div>
+    <div id="tipToken" class="tips" style="display:none">
+      直接填 32 位 token（抓包里 <code>X-LF-UserToken</code> 的值）。不确定就用上面两种方式。
+    </div>
+
+    <div class="field">
+      <label>备注名（可留空）</label>
+      <input type="text" id="accName" placeholder="例如：我的账号">
+    </div>
+
+    <div class="field" id="fieldText">
+      <label>内容</label>
+      <textarea id="accPayload" placeholder="curl 'https://gw2c-hw-open.longfor.com/...' -H 'X-LF-UserToken: ...'"></textarea>
+    </div>
+
+    <div class="field" id="fieldFile" style="display:none">
+      <label>HAR 文件</label>
+      <input type="file" id="accFile" accept=".har,.json">
+    </div>
+
+    <div class="dialog-foot">
+      <button id="btnCancelAdd" class="ghost">取消</button>
+      <button id="btnSubmitAdd" class="primary">校验并添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- 设置 -->
+<div class="modal" id="modalSettings">
+  <div class="dialog">
+    <h3>设置</h3>
+    <div class="hint">每天到点自动跑一轮：续期 + 签到 + 刷新状态。</div>
+    <div class="field">
+      <label>签到时间</label>
+      <input type="time" id="setTime">
+    </div>
+    <div class="field">
+      <label>告警 Webhook（企业微信 / 钉钉机器人，可留空）</label>
+      <input type="text" id="setWebhook" placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...">
+    </div>
+    <div class="tips">续期失败或签到失败时推一条消息，避免静默失效。</div>
+    <div class="dialog-foot">
+      <button id="btnCancelSet" class="ghost">取消</button>
+      <button id="btnSaveSet" class="primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let accounts = [];
+let bindMode = "curl";
+
+function toast(msg, isErr) {
+  const el = $("toast");
+  el.textContent = msg;
+  el.className = "show" + (isErr ? " err" : "");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.className = ""; }, 3200);
+}
+
+async function api(path, opts) {
+  let res;
+  try {
+    res = await fetch(path, opts);
+  } catch (e) {
+    throw new Error("无法连接服务");
+  }
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* ignore */ }
+  if (!res.ok) throw new Error((data && (data.detail || data.message)) || `请求失败 ${res.status}`);
+  return data;
+}
+
+function statusBadge(acc) {
+  const today = new Date().toISOString().slice(0, 10);
+  const ranToday = (acc.last_run_at || "").slice(0, 10) === today;
+  if (!ranToday) return ['b-pending', '待执行'];
+  if (acc.last_status === "ok") return ['b-ok', '已签到'];
+  if (acc.last_status === "already") return ['b-already', '今日已签'];
+  if (acc.last_status === "fail") return ['b-fail', '失败'];
+  return ['b-pending', '待执行'];
+}
+
+function renderOverview(o) {
+  const s = o.stats || {};
+  $("overview").innerHTML = `
+    <div class="stat"><div class="label">账号总数</div><div class="value">${o.total}<small>个</small></div></div>
+    <div class="stat"><div class="label">今日签到成功</div><div class="value" style="color:var(--green)">${(s.ok || 0) + (s.already || 0)}<small>个</small></div></div>
+    <div class="stat"><div class="label">待执行 / 失败</div><div class="value" style="color:${(s.fail||0) > 0 ? 'var(--red)' : 'var(--amber)'}">${(s.pending || 0) + (s.fail || 0)}<small>个</small></div></div>
+    <div class="stat"><div class="label">最短有效期</div><div class="value">${o.min_days === null ? "—" : o.min_days}<small>天</small></div></div>
+    <div class="stat"><div class="label">下次执行</div><div class="value" style="font-size:15px;padding-top:6px">${o.next_run || "—"}</div></div>
+  `;
+}
+
+function renderAccounts() {
+  if (!accounts.length) {
+    $("accounts").innerHTML = `<div class="empty" style="grid-column:1/-1">
+      <b>还没有账号</b>点击右上角「添加账号」，粘贴一次 cURL 就能开始自动签到
+    </div>`;
+    return;
+  }
+  $("accounts").innerHTML = accounts.map((a) => {
+    const [cls, label] = statusBadge(a);
+    const days = a.days_left === null || a.days_left === undefined ? null : a.days_left;
+    const pct = days === null ? 0 : Math.max(2, Math.min(100, (days / 30) * 100));
+    const barCls = days === null ? "" : days <= 3 ? "danger" : days <= 7 ? "warn" : "";
+    const dayText = days === null ? "未知" : `剩 ${days} 天`;
+    return `
+    <div class="card" data-id="${a.id}">
+      <div class="card-head">
+        <div>
+          <div class="card-name">${escapeHtml(a.name)}</div>
+          <div class="card-sub">${a.token_mask || ""}</div>
+        </div>
+        <span class="badge ${cls}">${label}</span>
+      </div>
+      <div class="metrics">
+        <div class="metric"><div class="k">成长值</div><div class="v">${a.growth_value ?? 0}</div></div>
+        <div class="metric"><div class="k">等级</div><div class="v">${escapeHtml(a.level_name || "—")}</div></div>
+        <div class="metric"><div class="k">珑珠</div><div class="v gold">${a.balance ?? 0}</div></div>
+      </div>
+      <div class="bar-label"><span>token 有效期</span><span>${dayText}</span></div>
+      <div class="bar ${barCls}"><i style="width:${pct}%"></i></div>
+      <div class="card-foot">
+        <div class="msg" title="${escapeHtml(a.last_message || "")}">${escapeHtml(a.last_message || "尚未执行")}</div>
+        <button class="small" data-run="${a.id}">立即签到</button>
+        <button class="small danger" data-del="${a.id}">删除</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function renderLogs(logs) {
+  if (!logs || !logs.length) {
+    $("logs").innerHTML = `<div class="log-row"><div class="m">暂无记录</div></div>`;
+    return;
+  }
+  $("logs").innerHTML = logs.map((l) => {
+    const scls = l.status === "ok" ? "s-ok" : l.status === "fail" ? "s-fail" : l.status === "already" ? "s-already" : "";
+    const names = { refresh: "续期", checkin: "签到", query: "查询", bind: "绑定", run: "执行" };
+    return `<div class="log-row">
+      <div class="t">${(l.ts || "").replace("T", " ").slice(5, 16)}</div>
+      <div class="n">${escapeHtml(l.account_name || "")}</div>
+      <div class="a">${names[l.action] || l.action || ""}</div>
+      <div class="m"><span class="${scls}">${escapeHtml(l.message || "")}</span></div>
+    </div>`;
+  }).join("");
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+async function loadAll() {
+  try {
+    const [overview, accs, logs] = await Promise.all([
+      api("/api/overview"), api("/api/accounts"), api("/api/logs?limit=40"),
+    ]);
+    renderOverview(overview);
+    accounts = accs;
+    renderAccounts();
+    renderLogs(logs);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+// ---- 交互 ----
+$("btnAdd").onclick = () => {
+  $("accName").value = "";
+  $("accPayload").value = "";
+  $("accFile").value = "";
+  $("modalAdd").classList.add("show");
+};
+$("btnCancelAdd").onclick = () => $("modalAdd").classList.remove("show");
+
+document.querySelectorAll(".tabs button").forEach((btn) => {
+  btn.onclick = () => {
+    document.querySelectorAll(".tabs button").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    bindMode = btn.dataset.mode;
+    $("fieldText").style.display = bindMode === "har" ? "none" : "block";
+    $("fieldFile").style.display = bindMode === "har" ? "block" : "none";
+    $("tipCurl").style.display = bindMode === "curl" ? "block" : "none";
+    $("tipHar").style.display = bindMode === "har" ? "block" : "none";
+    $("tipToken").style.display = bindMode === "token" ? "block" : "none";
+  };
+});
+
+$("btnSubmitAdd").onclick = async () => {
+  const btn = $("btnSubmitAdd");
+  const fd = new FormData();
+  fd.append("mode", bindMode);
+  fd.append("name", $("accName").value.trim());
+
+  if (bindMode === "har") {
+    const f = $("accFile").files[0];
+    if (!f) return toast("请选择 HAR 文件", true);
+    fd.append("file", f);
+  } else {
+    const text = $("accPayload").value.trim();
+    if (!text) return toast("请粘贴内容", true);
+    fd.append("payload", text);
+  }
+
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>校验中';
+  try {
+    const res = await api("/api/accounts/bind", { method: "POST", body: fd });
+    $("modalAdd").classList.remove("show");
+    toast(`已添加：${res.name}`);
+    await loadAll();
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "校验并添加";
+  }
+};
+
+$("accounts").addEventListener("click", async (ev) => {
+  const runId = ev.target.dataset.run;
+  const delId = ev.target.dataset.del;
+  if (runId) {
+    const btn = ev.target;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spin"></span>';
+    try {
+      const r = await api(`/api/accounts/${runId}/run`, { method: "POST" });
+      const msg = r.checkin_status === "ok" ? r.checkin_message
+        : r.checkin_status === "already" ? "今日已签到"
+        : (r.checkin_message || r.error || "失败");
+      toast(msg, r.checkin_status === "fail");
+      await loadAll();
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "立即签到";
+    }
+  }
+  if (delId) {
+    if (!confirm("确定删除这个账号？")) return;
+    try {
+      await api(`/api/accounts/${delId}`, { method: "DELETE" });
+      toast("已删除");
+      await loadAll();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+});
+
+$("btnSettings").onclick = async () => {
+  try {
+    const s = await api("/api/settings");
+    $("setTime").value = s.checkin_time || "08:05";
+    $("setWebhook").value = s.webhook_url || "";
+    $("modalSettings").classList.add("show");
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+$("btnCancelSet").onclick = () => $("modalSettings").classList.remove("show");
+
+$("btnSaveSet").onclick = async () => {
+  const fd = new FormData();
+  fd.append("checkin_time", $("setTime").value || "08:05");
+  fd.append("webhook_url", $("setWebhook").value.trim());
+  try {
+    await api("/api/settings", { method: "POST", body: fd });
+    $("modalSettings").classList.remove("show");
+    toast("设置已保存");
+    await loadAll();
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+document.querySelectorAll(".modal").forEach((m) => {
+  m.addEventListener("click", (ev) => { if (ev.target === m) m.classList.remove("show"); });
+});
+
+loadAll();
+setInterval(loadAll, 60000);
+</script>
+</body>
+</html>

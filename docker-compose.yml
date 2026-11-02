@@ -1,0 +1,18 @@
+services:
+  longhu:
+    build:
+      context: .
+      args:
+        # 国内构建走清华源，海外服务器可删掉这行
+        PIP_INDEX_URL: https://pypi.tuna.tsinghua.edu.cn/simple
+    image: longhu-checkin:latest
+    container_name: longhu-checkin
+    restart: unless-stopped
+    ports:
+      - "8088:8000"
+    volumes:
+      - ./data:/data
+    environment:
+      TZ: Asia/Shanghai
+      DATA_DIR: /data
+    pids_limit: 256
