@@ -1,0 +1,77 @@
+"""新号 AB 探针：同一个 token、同一套请求头，分别打小程序活动与 APP 活动的 clock。
+
+用法：
+    python probe_acct.py <token> [备注]
+
+结论矩阵：
+    小程序 0000 + APP 801810  -> 是「APP 活动」特有门槛（环境/活动端限制），账号本身没问题
+    两个都 0000               -> 之前失败是「当天已参与」之类，可正常跑双入口
+    两个都 801810             -> token 或设备指纹不被认可（新号更容易被判风险）
+"""
+import sys, json, pathlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from app import longhu  # noqa: E402
+
+
+def describe(account, name, act, do_clock=True):
+    state = longhu.sign_state(account, act)
+    res = longhu._request(
+        "POST",
+        f"{longhu.BASE}/lmarketing-task-api-mvc-prod/openapi/task/v1/signature/page-info",
+        longhu._task_headers(account),
+        {"activity_no": act},
+    )
+    data = res.get("data") or {}
+    print(f"[{name}] page-info code={res.get('code')} 今日={'已签' if state else ('未签' if state is False else '未知')} "
+          f"task_show={data.get('task_show_status')} sign_again_num={data.get('sign_again_num')}")
+
+    if not do_clock:
+        return "skip"
+    clock = longhu._request(
+        "POST",
+        f"{longhu.BASE}/lmarketing-task-api-mvc-prod/openapi/task/v1/signature/clock",
+        longhu._task_headers(account),
+        {"activity_no": act},
+    )
+    d = clock.get("data") or {}
+    print(f"[{name}] clock     code={clock.get('code')} msg={clock.get('message')} "
+          f"is_popup={d.get('is_popup')} rewards={d.get('reward_info')}")
+    after = longhu.sign_state(account, act)
+    print(f"[{name}] 复核      今日={'已签' if after else ('未签' if after is False else '未知')}")
+    return str(clock.get("code") or "")
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(__doc__)
+        return 1
+    token = sys.argv[1].strip()
+    label = sys.argv[2] if len(sys.argv) > 2 and not sys.argv[2].startswith("-") else "新号"
+    do_clock = "--no-clock" not in sys.argv
+    account = {
+        "token": token,
+        "user_agent": longhu.DEFAULT_UA,
+        "channel": "C2",
+        "bu_code": "C20400",
+    }
+    profile = longhu.fetch_profile(account)
+    print(f"== {label}  token={token[:6]}...{token[-4:]}  昵称={profile.get('nickname')} "
+          f"等级={profile.get('level_name')}  成长值={profile.get('growth_value')}")
+    mini = describe(account, "小程序", longhu.ACTIVITY_NO, do_clock)
+    print("-" * 60)
+    app_ = describe(account, "APP", longhu.APP_ACTIVITY_NO, do_clock)
+    print("=" * 60)
+    if mini == "0000" and app_ == "801810":
+        print("判定：小程序能签、APP 被拒 -> 账号/指纹正常，门槛在 APP 活动侧")
+    elif mini == "0000" and app_ == "0000":
+        print("判定：两个都能签 -> 之前 801810 属「已参与」类，可正常跑双入口")
+    elif mini == "801810" and app_ == "801810":
+        print("判定：两个都被拒 -> token 或设备指纹不被认可（新号风险更高）")
+    else:
+        print(f"判定：小程序={mini} APP={app_}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

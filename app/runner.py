@@ -90,8 +90,36 @@ def notify(text: str):
         session.close()
 
 
-def run_account(account: dict, do_checkin: bool = True) -> dict:
-    """执行单个账号的完整流程，返回可直接给前端用的结果。"""
+APP_MODES = ("auto", "manual", "off")
+
+
+def _app_entry(account: dict, item: dict, mode: str) -> tuple[str, str]:
+    """APP 专享签到入口。
+
+    auto   ：照旧真去签（目前必被 801810 拒绝，只用于排查时复现）
+    manual ：只查状态，不打卡；未签就记 todo 交给每日汇总提醒人工去点
+    off    ：完全不处理
+    """
+    label = "APP "
+    if mode == "off":
+        return "skipped", f"{label}已关闭"
+    if mode == "auto":
+        return longhu.checkin(account, item["activity_no"], label)
+
+    state = longhu.sign_state(account, item["activity_no"])
+    if state is True:
+        return "already", f"{label}今日已签到"
+    if state is False:
+        return "todo", f"{label}未签到，需在 App 内手动签（程序请求会被风控拒绝）"
+    return "todo", f"{label}状态未知，需在 App 内确认"
+
+
+def run_account(account: dict, do_checkin: bool = True,
+                app_mode: str | None = None) -> dict:
+    """执行单个账号的完整流程，返回可直接给前端用的结果。
+
+    app_mode 为 None 时取设置里的 app_checkin_mode。
+    """
     acc_id = account["id"]
     acc_name = account["name"]
     result = {
@@ -124,13 +152,21 @@ def run_account(account: dict, do_checkin: bool = True) -> dict:
         logger.warning("[%s] 续期失败: %s", acc_name, payload)
 
     # ---- 2. 签到（小程序 + APP 两个入口，同一天各签一次） ----
+    if app_mode is None:
+        app_mode = (db.get_settings().get("app_checkin_mode") or "manual").strip().lower()
+    if app_mode not in APP_MODES:
+        app_mode = "manual"
+
     extra = []
     if do_checkin:
         for item in longhu.ACTIVITIES:
             is_main = item["key"] == "mini"
             label = "" if is_main else "APP "
             try:
-                status, message = longhu.checkin(account, item["activity_no"], label)
+                if is_main:
+                    status, message = longhu.checkin(account, item["activity_no"], label)
+                else:
+                    status, message = _app_entry(account, item, app_mode)
             except longhu.LonghuError as exc:
                 status, message = "fail", str(exc)
             except Exception as exc:  # 单个入口异常不影响另一个
@@ -211,7 +247,7 @@ def daily_summary(results: list[dict]):
     app_lines = []
     for item in results:
         for extra in item.get("extra_signs") or []:
-            if extra.get("status") not in ("ok", "already"):
+            if extra.get("status") in ("fail", "todo"):
                 app_lines.append(f"· {item['name']} {extra['name']}: {extra.get('message')}")
 
     if failed:
@@ -220,7 +256,8 @@ def daily_summary(results: list[dict]):
             lines.append(f"· {item['name']}: {item.get('checkin_message') or item.get('error')}")
         lines.extend(app_lines)
         notify("\n".join(lines))
-    elif ok:
+    elif ok or app_lines:
+        # 全部「今日已签」时原本什么都不推，会导致 APP 入口的手动提醒被吞掉
         text = f"【龙湖签到】成功 {len(ok)} 个，已签 {len(already)} 个"
         if app_lines:
             text += "\n" + "\n".join(app_lines)

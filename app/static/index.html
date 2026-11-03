@@ -95,6 +95,7 @@
   .s-ok { color: var(--green); }
   .s-fail { color: var(--red); }
   .s-already { color: #7ba7e8; }
+  .s-todo { color: var(--amber); }
 
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,.66); backdrop-filter: blur(4px); display: none; align-items: center; justify-content: center; padding: 20px; z-index: 50; }
   .modal.show { display: flex; }
@@ -103,10 +104,14 @@
   .dialog .hint { color: var(--dim); font-size: 12.5px; margin-bottom: 16px; }
   .field { margin-bottom: 14px; }
   .field label { display: block; font-size: 12.5px; color: var(--dim); margin-bottom: 6px; }
-  input[type=text], textarea, input[type=time], input[type=number] {
+  input[type=text], textarea, input[type=time], input[type=number], select {
     width: 100%; background: #0d1015; border: 1px solid var(--line); border-radius: 10px;
     color: var(--text); padding: 10px 12px; font: inherit; outline: none; transition: .15s;
   }
+  select { appearance: none; -webkit-appearance: none; cursor: pointer;
+    background-image: linear-gradient(45deg, transparent 50%, #6b7688 50%), linear-gradient(135deg, #6b7688 50%, transparent 50%);
+    background-position: calc(100% - 18px) calc(50% + 1px), calc(100% - 13px) calc(50% + 1px);
+    background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
   input[type=number]::-webkit-inner-spin-button,
   input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
   input:focus, textarea:focus { border-color: #3a4a66; box-shadow: 0 0 0 3px rgba(77,139,254,.12); }
@@ -218,6 +223,15 @@
       <input type="text" id="setWebhook" placeholder="https://api.day.app/你的DeviceKey">
     </div>
     <div class="tips">续期或签到失败时推一条消息，避免静默失效。<br>Bark 填 <code>https://api.day.app/DeviceKey</code>（自建服务填你的域名/key）；企业微信填群机器人 webhook 地址。类型自动识别，不用选。</div>
+    <div class="field">
+      <label>APP 专享签到（奖励翻倍的第二个活动）</label>
+      <select id="setAppMode">
+        <option value="manual">只查状态，未签就提醒（推荐）</option>
+        <option value="auto">每天照旧尝试自动签</option>
+        <option value="off">完全不处理</option>
+      </select>
+    </div>
+    <div class="tips">APP 那个活动要求顶象滑块验证，程序请求会被恒定为 <code>801810</code> 拒绝，自动打一次既签不上又白给风控加分。选「只查状态」时每天只比对签到日历，没签就推一条提醒让你去 App 里点一下。</div>
     <div class="dialog-foot">
       <button id="btnCancelSet" class="ghost">取消</button>
       <button id="btnSaveSet" class="primary">保存</button>
@@ -318,8 +332,9 @@ function renderLogs(logs) {
     return;
   }
   $("logs").innerHTML = logs.map((l) => {
-    const scls = l.status === "ok" ? "s-ok" : l.status === "fail" ? "s-fail" : l.status === "already" ? "s-already" : "";
-    const names = { refresh: "续期", checkin: "签到", query: "查询", bind: "绑定", run: "执行" };
+    const scls = l.status === "ok" ? "s-ok" : l.status === "fail" ? "s-fail"
+      : l.status === "already" ? "s-already" : l.status === "todo" ? "s-todo" : "";
+    const names = { refresh: "续期", checkin: "签到", checkin_app: "APP签到", query: "查询", bind: "绑定", run: "执行" };
     return `<div class="log-row">
       <div class="t">${(l.ts || "").replace("T", " ").slice(5, 16)}</div>
       <div class="n">${escapeHtml(l.account_name || "")}</div>
@@ -456,6 +471,7 @@ $("btnSettings").onclick = async () => {
     $("setTime").value = s.checkin_time || "08:00";
     $("setJitter").value = s.checkin_jitter ?? "60";
     $("setWebhook").value = s.webhook_url || "";
+    $("setAppMode").value = s.app_checkin_mode || "manual";
     updateWindowTip();
     $("modalSettings").classList.add("show");
   } catch (e) {
@@ -471,6 +487,7 @@ $("btnSaveSet").onclick = async () => {
   fd.append("checkin_time", $("setTime").value || "08:00");
   fd.append("checkin_jitter", $("setJitter").value.trim());
   fd.append("webhook_url", $("setWebhook").value.trim());
+  fd.append("app_checkin_mode", $("setAppMode").value);
   try {
     await api("/api/settings", { method: "POST", body: fd });
     $("modalSettings").classList.remove("show");

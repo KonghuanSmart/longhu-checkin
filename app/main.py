@@ -142,11 +142,15 @@ def api_delete(account_id: int):
 
 
 @app.post("/api/accounts/{account_id}/run")
-def api_run(account_id: int):
+def api_run(account_id: int, app: str | None = None):
+    """立即跑一轮。app=auto 强制尝试 APP 入口，app=off 跳过，默认按设置。"""
     account = db.get_account(account_id)
     if not account:
         raise HTTPException(404, "账号不存在")
-    result = runner.run_account(account, do_checkin=True)
+    mode = (app or "").strip().lower() or None
+    if mode and mode not in runner.APP_MODES:
+        raise HTTPException(400, "app 只能是 auto / manual / off")
+    result = runner.run_account(account, do_checkin=True, app_mode=mode)
     return result
 
 
@@ -201,6 +205,7 @@ def api_get_settings():
         "checkin_jitter": data.get("checkin_jitter", "60"),
         "window": scheduler.window_text(),
         "webhook_url": data.get("webhook_url", ""),
+        "app_checkin_mode": data.get("app_checkin_mode", "manual"),
         "next_run": scheduler.next_run_text(),
     }
 
@@ -210,6 +215,7 @@ def api_save_settings(
     checkin_time: str = Form(...),
     webhook_url: str = Form(""),
     checkin_jitter: str | None = Form(None),
+    app_checkin_mode: str | None = Form(None),
 ):
     try:
         hour, minute = checkin_time.split(":")
@@ -225,6 +231,12 @@ def api_save_settings(
         except Exception:
             raise HTTPException(400, "随机浮动应为 0–1439 之间的分钟数") from None
         values["checkin_jitter"] = str(jitter)
+
+    if app_checkin_mode is not None and app_checkin_mode.strip() != "":
+        mode = app_checkin_mode.strip().lower()
+        if mode not in runner.APP_MODES:
+            raise HTTPException(400, "APP 入口方式只能是 auto / manual / off")
+        values["app_checkin_mode"] = mode
 
     db.save_settings(values)
     scheduler.reschedule()

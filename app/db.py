@@ -57,6 +57,10 @@ DEFAULT_SETTINGS = {
     "retry_count": "0",
     "webhook_url": "",
     "auto_refresh": "1",
+    # APP 专享入口怎么处理：manual（默认，只查状态、未签则提醒）/ auto（照旧尝试）
+    # / off（完全不处理）。APP 活动要求顶象滑块，程序请求恒被 801810 拒绝，
+    # 每天自动打一次既签不上，又白白给风控加分，所以默认改成只提醒不尝试。
+    "app_checkin_mode": "manual",
 }
 
 
