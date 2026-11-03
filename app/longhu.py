@@ -218,7 +218,10 @@ def _task_headers(account: dict) -> dict:
         "token": account.get("token") or "",
         "Content-Type": "application/json;charset=UTF-8",
     }
-    fingerprint = risk_token(account)
+    # 设备指纹：优先用账号里存的 App 内真实指纹。udid/c1 现造的那个 40 位 token
+    # 在当前风控策略下会被判风险（8040012「网络故障」/ 801810「活动太火爆」），
+    # 而 App 里生成的顶象 token 能直接过，实测两个活动都能签。
+    fingerprint = (account.get("dx_token") or "").strip() or risk_token(account)
     if fingerprint:
         headers["X-LF-DXRisk-Token"] = fingerprint
     return headers
@@ -264,14 +267,14 @@ def sign_state(account: dict, activity_no: str = ACTIVITY_NO) -> bool | None:
 
 
 CODE_HINT = {
-    # 「活动太火爆了，明日再来试试~」这句文案有误导性。实测同一天手动在 App 里
-    # 拖过顶象滑块能签成功，而程序请求始终是 801810，所以它不是「名额用完」，
-    # 而是活动端没接受这个请求（今日已参与 / 未被判定为 App 环境）。
-    "801810": "活动端拒绝：今日已参与该活动，或请求未被判定为 App 环境（需手动在 App 内签）",
+    # 这两个码的文案都是误导性的，实测根因都是「设备指纹不被认可」：
+    # 用 udid/c1 现造的 40 位 token 会稳定拿到这两个码，换成 App 内生成的
+    # 顶象指纹（_dx_app_ 那一项）后，同一账号同一时刻立刻签成功。
+    "801810": "风控拒绝：设备指纹不被认可（换成 App 内的真实指纹）",
     "801811": "需要滑块验证（顶象 dx-captcha）",
-    "801812": "活动端拒绝：同上，多为重复参与",
-    "8040012": "风控拦截（设备指纹缺失或无效）",
-    "8040016": "风控拦截（设备指纹缺失或无效）",
+    "801812": "风控拒绝：设备指纹不被认可（同上）",
+    "8040012": "风控拦截：设备指纹不被认可",
+    "8040016": "风控拦截：设备指纹不被认可",
 }
 
 

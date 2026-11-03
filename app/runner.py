@@ -103,6 +103,10 @@ def _app_entry(account: dict, item: dict, mode: str) -> tuple[str, str]:
     label = "APP "
     if mode == "off":
         return "skipped", f"{label}已关闭"
+    if not (account.get("dx_token") or "").strip():
+        # 没有 App 内真实指纹时不要硬打：udid/c1 现造的指纹必被判风险，
+        # 攒的全是负面记录，还会把账号拖进 8040012 的坑里
+        return "todo", f"{label}未配置设备指纹，跳过（在 App 数据里取 _dx_app_ 的值填进账号）"
     if mode == "auto":
         return longhu.checkin(account, item["activity_no"], label)
 
@@ -153,9 +157,9 @@ def run_account(account: dict, do_checkin: bool = True,
 
     # ---- 2. 签到（小程序 + APP 两个入口，同一天各签一次） ----
     if app_mode is None:
-        app_mode = (db.get_settings().get("app_checkin_mode") or "manual").strip().lower()
+        app_mode = (db.get_settings().get("app_checkin_mode") or "auto").strip().lower()
     if app_mode not in APP_MODES:
-        app_mode = "manual"
+        app_mode = "auto"
 
     extra = []
     if do_checkin:

@@ -226,12 +226,12 @@
     <div class="field">
       <label>APP 专享签到（奖励翻倍的第二个活动）</label>
       <select id="setAppMode">
-        <option value="manual">只查状态，未签就提醒（推荐）</option>
-        <option value="auto">每天照旧尝试自动签</option>
+        <option value="auto">两个入口都自动签（推荐）</option>
+        <option value="manual">只查状态，未签就提醒</option>
         <option value="off">完全不处理</option>
       </select>
     </div>
-    <div class="tips">APP 那个活动要求顶象滑块验证，程序请求会被恒定为 <code>801810</code> 拒绝，自动打一次既签不上又白给风控加分。选「只查状态」时每天只比对签到日历，没签就推一条提醒让你去 App 里点一下。</div>
+    <div class="tips">APP 入口要求 <code>X-LF-DXRisk-Token</code> 是 App 内生成的真实指纹，否则会回 <code>801810</code>／<code>8040012</code> 这类误导性报错。账号卡片上点「补指纹」填入即可；Mac 上装了龙湖 App 的话，跑 <code>python tools/read_mac_app.py</code> 能直接读出来。没配指纹时程序会自动跳过 APP 入口，不硬打。</div>
     <div class="dialog-foot">
       <button id="btnCancelSet" class="ghost">取消</button>
       <button id="btnSaveSet" class="primary">保存</button>
@@ -306,7 +306,7 @@ function renderAccounts() {
       <div class="card-head">
         <div>
           <div class="card-name">${escapeHtml(a.name)}</div>
-          <div class="card-sub">${a.token_mask || ""}</div>
+          <div class="card-sub">${a.token_mask || ""} · <span style="color:${a.has_dx ? "var(--green)" : "var(--amber)"}">指纹${a.has_dx ? "已配置" : "待补"}</span></div>
         </div>
         <span class="badge ${cls}">${label}</span>
       </div>
@@ -319,6 +319,7 @@ function renderAccounts() {
       <div class="bar ${barCls}"><i style="width:${pct}%"></i></div>
       <div class="card-foot">
         <div class="msg" title="${escapeHtml(a.last_message || "")}">${escapeHtml(a.last_message || "尚未执行")}</div>
+        <button class="small" data-dx="${a.id}">${a.has_dx ? "换指纹" : "补指纹"}</button>
         <button class="small" data-run="${a.id}">立即签到</button>
         <button class="small danger" data-del="${a.id}">删除</button>
       </div>
@@ -334,7 +335,7 @@ function renderLogs(logs) {
   $("logs").innerHTML = logs.map((l) => {
     const scls = l.status === "ok" ? "s-ok" : l.status === "fail" ? "s-fail"
       : l.status === "already" ? "s-already" : l.status === "todo" ? "s-todo" : "";
-    const names = { refresh: "续期", checkin: "签到", checkin_app: "APP签到", query: "查询", bind: "绑定", run: "执行" };
+    const names = { refresh: "续期", checkin: "签到", checkin_app: "APP签到", query: "查询", bind: "绑定", run: "执行", dx: "指纹" };
     return `<div class="log-row">
       <div class="t">${(l.ts || "").replace("T", " ").slice(5, 16)}</div>
       <div class="n">${escapeHtml(l.account_name || "")}</div>
@@ -420,6 +421,24 @@ $("btnSubmitAdd").onclick = async () => {
 $("accounts").addEventListener("click", async (ev) => {
   const runId = ev.target.dataset.run;
   const delId = ev.target.dataset.del;
+  const dxId = ev.target.dataset.dx;
+  if (dxId) {
+    const value = prompt(
+      "粘贴 App 内的顶象设备指纹（形如 6ae93a6cUDMfhHgK6eYXWjqtu1qMG9bAJdij8Er1）。\n" +
+      "取法：App 数据目录里 localStorage 的 _dx_app_d1a43734fc59aeae9f1562dbd70fdf54，\n" +
+      "在 Mac 上可直接跑 python tools/read_mac_app.py 读出来。留空表示清除。"
+    );
+    if (value === null) return;
+    try {
+      const fd = new FormData();
+      fd.append("dx_token", value.trim());
+      await api(`/api/accounts/${dxId}/dx`, { method: "POST", body: fd });
+      toast(value.trim() ? "设备指纹已保存" : "已清除");
+      await loadAll();
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
   if (runId) {
     const btn = ev.target;
     btn.disabled = true;

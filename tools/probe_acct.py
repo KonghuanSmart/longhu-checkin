@@ -49,27 +49,36 @@ def main():
     token = sys.argv[1].strip()
     label = sys.argv[2] if len(sys.argv) > 2 and not sys.argv[2].startswith("-") else "新号"
     do_clock = "--no-clock" not in sys.argv
+    dx = ""
+    for arg in sys.argv[3:]:
+        if arg.startswith("--dx="):
+            dx = arg.split("=", 1)[1].strip()
     account = {
         "token": token,
         "user_agent": longhu.DEFAULT_UA,
         "channel": "C2",
         "bu_code": "C20400",
+        "dx_token": dx,
     }
     profile = longhu.fetch_profile(account)
     print(f"== {label}  token={token[:6]}...{token[-4:]}  昵称={profile.get('nickname')} "
           f"等级={profile.get('level_name')}  成长值={profile.get('growth_value')}")
+    print(f"   指纹：{dx or '未指定（用 udid/c1 现造，会被判风险）'}")
     mini = describe(account, "小程序", longhu.ACTIVITY_NO, do_clock)
     print("-" * 60)
     app_ = describe(account, "APP", longhu.APP_ACTIVITY_NO, do_clock)
     print("=" * 60)
-    if mini == "0000" and app_ == "801810":
-        print("判定：小程序能签、APP 被拒 -> 账号/指纹正常，门槛在 APP 活动侧")
-    elif mini == "0000" and app_ == "0000":
-        print("判定：两个都能签 -> 之前 801810 属「已参与」类，可正常跑双入口")
-    elif mini == "801810" and app_ == "801810":
-        print("判定：两个都被拒 -> token 或设备指纹不被认可（新号风险更高）")
+    ok_codes = ("0000",)
+    if mini in ok_codes and app_ in ok_codes:
+        print("判定：两个都能签 -> 这套指纹可用，双入口可正常跑")
+    elif mini in ok_codes:
+        print("判定：小程序能签、APP 被拒 -> 账号正常，问题在 APP 活动的指纹要求")
+    elif app_ in ok_codes:
+        print("判定：APP 能签、小程序被拒 -> 少见，看看是不是小程序侧有额外限制")
+    elif mini == "skip" or app_ == "skip":
+        print("判定：只查了状态（--no-clock）")
     else:
-        print(f"判定：小程序={mini} APP={app_}")
+        print(f"判定：两个都被拒（{mini}/{app_}）-> 设备指纹不被认可，换 App 内真实指纹")
     return 0
 
 

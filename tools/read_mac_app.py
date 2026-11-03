@@ -1,0 +1,85 @@
+"""从 Mac 上的龙湖 App 容器里读出登录凭据与设备指纹。
+
+App 跑在 Mac 上时（Apple 芯片装的 iOS 版），token 存在 NSUserDefaults 的
+SALoginData 里，设备指纹存在 App 内 WebView 的 localStorage 里，都能直接读，
+不需要抓包。
+
+用法：
+    python tools/read_mac_app.py
+
+输出 token / lmId / 顶象指纹，照着填进看板的「添加账号」或「补指纹」即可。
+"""
+import glob
+import json
+import os
+import plistlib
+import re
+import sqlite3
+import sys
+
+PREFS = os.path.expanduser(
+    "~/Library/Containers/*/Data/Library/Preferences/com.longfor.supera.plist"
+)
+DX_KEY = "_dx_app_d1a43734fc59aeae9f1562dbd70fdf54"
+
+
+def read_login(plist_path: str) -> dict:
+    with open(plist_path, "rb") as fh:
+        data = plistlib.load(fh)
+    raw = data.get("SALoginData")
+    if not raw:
+        return {}
+    text = raw if isinstance(raw, str) else raw.decode("utf-8", "replace")
+    out = {}
+    for key in ("token", "lmId"):
+        m = re.search(rf'"{key}"\s*:\s*"?([\w-]+)"?', text)
+        if m:
+            out[key] = m.group(1)
+    return out
+
+
+def read_dx(container: str) -> str:
+    pattern = os.path.join(
+        container, "Data/Library/WebKit/WebsiteData/Default/*/*/LocalStorage/localstorage.sqlite3"
+    )
+    for db in glob.glob(pattern):
+        try:
+            con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+            row = con.execute("select value from ItemTable where key = ?", (DX_KEY,)).fetchone()
+            con.close()
+        except Exception:
+            continue
+        if not row:
+            continue
+        value = row[0]
+        return value.decode("utf-16-le", "replace") if isinstance(value, bytes) else str(value)
+    return ""
+
+
+def main() -> int:
+    found = False
+    for plist_path in glob.glob(PREFS):
+        container = plist_path.split("/Library/Containers/")[1].split("/")[0]
+        container = os.path.expanduser(f"~/Library/Containers/{container}")
+        login = read_login(plist_path)
+        if not login.get("token"):
+            continue
+        found = True
+        dx = read_dx(container)
+        print("=" * 64)
+        print(f"容器      {os.path.basename(container)}")
+        print(f"lmId      {login.get('lmId', '?')}")
+        print(f"token     {login['token']}")
+        print(f"指纹      {dx or '（没读到，App 里打开一次签到页再试）'}")
+        print()
+        print("填进看板的信息：")
+        print(json.dumps({"token": login["token"], "lmId": login.get("lmId"), "dx_token": dx},
+                         ensure_ascii=False, indent=2))
+    if not found:
+        print("没找到已登录的龙湖 App。确认 App 在本机登录过，路径：", PREFS)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

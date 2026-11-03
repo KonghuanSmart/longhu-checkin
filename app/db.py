@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     token         TEXT    NOT NULL,
     user_agent    TEXT,
     api_key       TEXT,
+    dx_token      TEXT,
     bu_code       TEXT DEFAULT 'C20400',
     channel       TEXT DEFAULT 'C2',
     growth_value  INTEGER DEFAULT 0,
@@ -57,10 +58,9 @@ DEFAULT_SETTINGS = {
     "retry_count": "0",
     "webhook_url": "",
     "auto_refresh": "1",
-    # APP 专享入口怎么处理：manual（默认，只查状态、未签则提醒）/ auto（照旧尝试）
-    # / off（完全不处理）。APP 活动要求顶象滑块，程序请求恒被 801810 拒绝，
-    # 每天自动打一次既签不上，又白白给风控加分，所以默认改成只提醒不尝试。
-    "app_checkin_mode": "manual",
+    # APP 专享入口怎么处理：auto（默认）/ manual（只查状态、未签提醒）/ off。
+    # 前提是账号里配了 App 内真实设备指纹（dx_token），否则自动跳过不硬打。
+    "app_checkin_mode": "auto",
 }
 
 
@@ -84,10 +84,26 @@ def connect():
 def init():
     with connect() as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
         for key, value in DEFAULT_SETTINGS.items():
             conn.execute(
                 "INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)", (key, value)
             )
+
+
+# 建表之后新增的列：老库用 ALTER TABLE 补，新库由 SCHEMA 直接带上
+MIGRATIONS = {
+    # 顶象设备指纹。App 内生成的才被认可，udid/c1 拿到的 40 位 token 会被判风险
+    "accounts": {"dx_token": "ALTER TABLE accounts ADD COLUMN dx_token TEXT"},
+}
+
+
+def _migrate(conn):
+    for table, columns in MIGRATIONS.items():
+        have = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, ddl in columns.items():
+            if name not in have:
+                conn.execute(ddl)
 
 
 # --------------------------------------------------------------------------
@@ -114,12 +130,13 @@ def create_account(data: dict) -> int:
     with connect() as conn:
         cur = conn.execute(
             """INSERT INTO accounts
-               (name, token, user_agent, api_key, bu_code, channel,
+               (name, token, user_agent, api_key, dx_token, bu_code, channel,
                 growth_value, level_name, balance, nickname,
                 expire_at, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 data["name"], data["token"], data.get("user_agent"), data.get("api_key"),
+                data.get("dx_token"),
                 data.get("bu_code", "C20400"), data.get("channel", "C2"),
                 data.get("growth_value", 0), data.get("level_name", ""),
                 data.get("balance", 0), data.get("nickname", ""),

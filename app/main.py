@@ -49,10 +49,11 @@ def index():
 
 def _decorate(account: dict) -> dict:
     item = dict(account)
-    for key in ("token", "user_agent", "api_key"):  # 敏感字段不外发
+    for key in ("token", "user_agent", "api_key", "dx_token"):  # 敏感字段不外发
         item.pop(key, None)
     token = account.get("token") or ""
     item["token_mask"] = f"{token[:6]}...{token[-4:]}" if len(token) > 12 else "****"
+    item["has_dx"] = bool((account.get("dx_token") or "").strip())
     item["days_left"] = runner.days_left(account.get("expire_at"))
     return item
 
@@ -67,6 +68,7 @@ async def api_bind(
     mode: str = Form(...),
     name: str = Form(""),
     payload: str = Form(""),
+    dx_token: str = Form(""),
     file: UploadFile | None = File(None),
 ):
     if mode == "har":
@@ -120,6 +122,7 @@ async def api_bind(
         "token": account["token"],
         "user_agent": account["user_agent"],
         "api_key": account["api_key"],
+        "dx_token": dx_token.strip() or None,
         "bu_code": account["bu_code"],
         "channel": account["channel"],
         "growth_value": profile.get("growth_value", 0),
@@ -131,6 +134,20 @@ async def api_bind(
     db.add_log(account_id, final_name, "bind", "ok", f"{parsed['note']}，凭据校验通过")
 
     return {"ok": True, "id": account_id, "name": final_name, "profile": profile}
+
+
+@app.post("/api/accounts/{account_id}/dx")
+def api_set_dx(account_id: int, dx_token: str = Form("")):
+    """补填 App 内真实设备指纹（顶象 token）。"""
+    if not db.get_account(account_id):
+        raise HTTPException(404, "账号不存在")
+    value = dx_token.strip()
+    if value and (len(value) < 20 or " " in value):
+        raise HTTPException(400, "指纹格式不对，应形如 6ae93a6cUDMfhHgK6eYXWjqtu1qMG9bAJdij8Er1")
+    db.update_account(account_id, dx_token=value)
+    db.add_log(account_id, (db.get_account(account_id) or {}).get("name", ""), "dx",
+               "ok" if value else "fail", "已保存设备指纹" if value else "已清除设备指纹")
+    return {"ok": True, "has_dx": bool(value)}
 
 
 @app.delete("/api/accounts/{account_id}")
