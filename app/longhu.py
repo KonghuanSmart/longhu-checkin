@@ -10,7 +10,9 @@
 
 import base64
 import hashlib
+import html
 import json
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -25,7 +27,24 @@ API_KEY_MAIN = "c06753f1-3e68-437d-b592-b94656ea5517"
 API_KEY_MEMBER = "98717e7a-a039-46af-8143-be7558a089c0"
 API_KEY_WALLET = "f4a2290e-c382-45b7-949c-3253d07e9b5b"
 
+# 小程序：日日签 日日赚
 ACTIVITY_NO = "11111111111686241863606037740000"
+# APP：APP签到 奖励翻倍（会员端「赚珑珠」里的 App 专享入口）
+APP_ACTIVITY_NO = "11111111111736501868255956070000"
+
+# 两个入口共用一个登录态（token 与 channel 都相同），只是活动号不同，
+# 所以同一天可以各签一次，成长值叠加。
+ACTIVITIES = (
+    {"key": "mini", "name": "小程序", "activity_no": ACTIVITY_NO},
+    {"key": "app", "name": "APP", "activity_no": APP_ACTIVITY_NO},
+)
+
+# 顶象设备指纹。签到接口要求带 X-LF-DXRisk-Token，缺了会被风控拦下，
+# 返回 8040012 / 8040016「网络故障，请稍后再试」。
+# 这个 token 由龙湖自建的 udid 服务签发，一个 GET 就能拿到，不需要跑 JS SDK。
+RISK_TOKEN_URL = "https://ly-sta.longhu.net/udid/c1?"
+RISK_TTL = 1800  # 半小时换一次，避免长期复用同一个指纹
+_risk_cache = {"token": "", "ts": 0.0}
 
 DEFAULT_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -147,9 +166,44 @@ def refresh_token(account: dict) -> tuple[bool, str]:
     return False, res2.get("message") or "key2token 未返回 token"
 
 
+def risk_token(account: dict | None = None, force: bool = False) -> str:
+    """取一个顶象设备指纹，用于 X-LF-DXRisk-Token。
+
+    udid 服务用 JSONP 回包（`_callback({...})` 且带 HTML 实体转义），
+    这里直接解析出 data 字段。拿不到就返回空串——签到请求照发，
+    只是可能被风控挡成 8040012，不会因此抛异常。
+    """
+    now = time.time()
+    if not force and _risk_cache["token"] and now - _risk_cache["ts"] < RISK_TTL:
+        return _risk_cache["token"]
+
+    headers = {
+        "User-Agent": (account or {}).get("user_agent") or DEFAULT_UA,
+        "Referer": "https://longzhu.longfor.com/",
+    }
+    session = requests.Session()
+    session.trust_env = False
+    token = ""
+    try:
+        resp = session.get(RISK_TOKEN_URL, headers=headers, timeout=15)
+        text = html.unescape(resp.text or "").strip()
+        match = re.search(r"\((\{.*\})\)", text, re.S)
+        payload = json.loads(match.group(1) if match else text)
+        token = str(payload.get("data") or "").strip()
+    except Exception:
+        token = ""
+    finally:
+        session.close()
+
+    if token:
+        _risk_cache["token"] = token
+        _risk_cache["ts"] = now
+    return token
+
+
 def _task_headers(account: dict) -> dict:
     """活动接口（page-info / clock）共用的请求头。"""
-    return {
+    headers = {
         "User-Agent": account.get("user_agent") or DEFAULT_UA,
         "Origin": "https://longzhu.longfor.com",
         "Referer": "https://longzhu.longfor.com/",
@@ -164,9 +218,13 @@ def _task_headers(account: dict) -> dict:
         "token": account.get("token") or "",
         "Content-Type": "application/json;charset=UTF-8",
     }
+    fingerprint = risk_token(account)
+    if fingerprint:
+        headers["X-LF-DXRisk-Token"] = fingerprint
+    return headers
 
 
-def sign_state(account: dict) -> bool | None:
+def sign_state(account: dict, activity_no: str = ACTIVITY_NO) -> bool | None:
     """查询「今天是否已签到」。True=已签，False=未签，None=查不到。
 
     以服务端返回的日历为准，比依赖 clock 接口的 is_popup 可靠：
@@ -177,7 +235,7 @@ def sign_state(account: dict) -> bool | None:
             "POST",
             f"{BASE}/lmarketing-task-api-mvc-prod/openapi/task/v1/signature/page-info",
             _task_headers(account),
-            {"activity_no": ACTIVITY_NO},
+            {"activity_no": activity_no},
         )
     except LonghuError:
         return None
@@ -205,15 +263,26 @@ def sign_state(account: dict) -> bool | None:
     return None
 
 
-def checkin(account: dict) -> tuple[str, str]:
+CODE_HINT = {
+    "801810": "活动提示今日名额/次数已用完（明日再来）",
+    "801811": "需要滑块验证码",
+    "801812": "活动提示今日名额/次数已用完（明日再来）",
+    "8040012": "风控拦截（设备指纹缺失或无效）",
+    "8040016": "风控拦截（设备指纹缺失或无效）",
+}
+
+
+def checkin(account: dict, activity_no: str = ACTIVITY_NO,
+            label: str = "") -> tuple[str, str]:
     """每日签到。返回 (status, message)
 
     status: ok（签到成功）/ already（今日已签）/ fail（失败）
     """
+    tag = f"{label}" if label else ""
     # 先查状态：已签就不要再打签到接口，免得无谓地触发风控
-    before = sign_state(account)
+    before = sign_state(account, activity_no)
     if before is True:
-        return "already", "今日已签到"
+        return "already", f"{tag}今日已签到"
 
     headers = _task_headers(account)
     try:
@@ -221,10 +290,10 @@ def checkin(account: dict) -> tuple[str, str]:
             "POST",
             f"{BASE}/lmarketing-task-api-mvc-prod/openapi/task/v1/signature/clock",
             headers,
-            {"activity_no": ACTIVITY_NO},
+            {"activity_no": activity_no},
         )
     except LonghuError as exc:
-        return "fail", f"签到请求失败：{exc}"
+        return "fail", f"{tag}签到请求失败：{exc}"
 
     code = str(res.get("code") or "")
     data = res.get("data") or {}
@@ -235,24 +304,23 @@ def checkin(account: dict) -> tuple[str, str]:
             reward = 0
             for item in (data.get("reward_info") or []):
                 reward += int(item.get("reward_num") or 0)
-            return "ok", f"签到成功，获得 {reward} 积分"
+            return "ok", f"{tag}签到成功，获得 {reward} 积分"
         # is_popup=0 有两种可能：本来已签，或接口假成功。用日历复核。
-        after = sign_state(account)
+        after = sign_state(account, activity_no)
         if after is False:
-            return "fail", "签到接口返回成功但日历仍显示未签，请稍后重试"
-        return "already", "今日已签到"
+            return "fail", f"{tag}签到接口返回成功但日历仍显示未签，请稍后重试"
+        return "already", f"{tag}今日已签到"
 
     if "未登录" in message or "登录已过期" in message or code == "801001":
         return "fail", "鉴权失败：token 已失效，需要重新导入"
 
     # 兜底：接口报错但可能实际上已经签上（历史上出现过报错但状态已更新）
-    if sign_state(account) is True:
-        return "ok", f"签到成功（接口返回 {code}，已按日历确认）"
+    if sign_state(account, activity_no) is True:
+        return "ok", f"{tag}签到成功（接口返回 {code}，已按日历确认）"
 
-    if before is False:
-        detail = f"{message or '未知错误'}"
-        return "fail", f"签到失败：{detail}（code={code or '无'}）"
-    return "fail", f"签到失败：{message or '未知错误'}（code={code or '无'}）"
+    hint = CODE_HINT.get(code, "")
+    detail = f"{message or '未知错误'}（code={code or '无'}{'，' + hint if hint else ''}）"
+    return "fail", f"{tag}签到失败：{detail}"
 
 
 def fetch_profile(account: dict) -> dict:

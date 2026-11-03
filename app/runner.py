@@ -100,6 +100,7 @@ def run_account(account: dict, do_checkin: bool = True) -> dict:
         "refreshed": False,
         "checkin_status": "skipped",
         "checkin_message": "",
+        "extra_signs": [],
         "profile": {},
         "error": "",
     }
@@ -122,18 +123,33 @@ def run_account(account: dict, do_checkin: bool = True) -> dict:
         result["error"] = payload
         logger.warning("[%s] 续期失败: %s", acc_name, payload)
 
-    # ---- 2. 签到 ----
+    # ---- 2. 签到（小程序 + APP 两个入口，同一天各签一次） ----
+    extra = []
     if do_checkin:
-        try:
-            status, message = longhu.checkin(account)
-        except longhu.LonghuError as exc:
-            status, message = "fail", str(exc)
-        result["checkin_status"] = status
-        result["checkin_message"] = message
-        db.add_log(acc_id, acc_name, "checkin", status, message)
-        db.update_account(acc_id, last_status=status, last_message=message)
+        for item in longhu.ACTIVITIES:
+            is_main = item["key"] == "mini"
+            label = "" if is_main else "APP "
+            try:
+                status, message = longhu.checkin(account, item["activity_no"], label)
+            except longhu.LonghuError as exc:
+                status, message = "fail", str(exc)
+            except Exception as exc:  # 单个入口异常不影响另一个
+                logger.exception("[%s] %s 签到异常", acc_name, item["name"])
+                status, message = "fail", f"异常: {exc}"
 
-        if status == "fail":
+            db.add_log(acc_id, acc_name, "checkin" if is_main else "checkin_app",
+                       status, message)
+            if is_main:
+                result["checkin_status"] = status
+                result["checkin_message"] = message
+                db.update_account(acc_id, last_status=status, last_message=message)
+            else:
+                extra.append({"key": item["key"], "name": item["name"],
+                              "status": status, "message": message})
+
+        result["extra_signs"] = extra
+        failed_main = result["checkin_status"] == "fail"
+        if failed_main:
             # 签到失败一律告警。之前只在「续期也失败」时才推，导致签到被拒
             # （例如上游返回「网络故障，请稍后再试」）时完全静默。
             if not ok:
@@ -142,7 +158,7 @@ def run_account(account: dict, do_checkin: bool = True) -> dict:
                 tail = "将按排程在当天内自动重试。"
             notify(
                 f"【龙湖签到】{acc_name} 失败\n"
-                f"续期: {payload}\n签到: {message}\n{tail}"
+                f"续期: {payload}\n签到: {result['checkin_message']}\n{tail}"
             )
 
     # ---- 3. 刷新资料 ----
@@ -191,10 +207,21 @@ def daily_summary(results: list[dict]):
     ok = [r for r in results if r.get("checkin_status") == "ok"]
     already = [r for r in results if r.get("checkin_status") == "already"]
 
+    # APP 专享签到的结果单独统计：它失败不影响主签到，只作提醒
+    app_lines = []
+    for item in results:
+        for extra in item.get("extra_signs") or []:
+            if extra.get("status") not in ("ok", "already"):
+                app_lines.append(f"· {item['name']} {extra['name']}: {extra.get('message')}")
+
     if failed:
         lines = [f"【龙湖签到】{len(failed)} 个账号异常"]
         for item in failed:
             lines.append(f"· {item['name']}: {item.get('checkin_message') or item.get('error')}")
+        lines.extend(app_lines)
         notify("\n".join(lines))
     elif ok:
-        notify(f"【龙湖签到】成功 {len(ok)} 个，已签 {len(already)} 个")
+        text = f"【龙湖签到】成功 {len(ok)} 个，已签 {len(already)} 个"
+        if app_lines:
+            text += "\n" + "\n".join(app_lines)
+        notify(text)
