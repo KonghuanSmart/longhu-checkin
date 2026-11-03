@@ -126,7 +126,7 @@ def _app_entry(account: dict, item: dict, mode: str) -> tuple[str, str]:
     if not (account.get("dx_token") or "").strip():
         # 没有 App 内真实指纹时不要硬打：udid/c1 现造的指纹必被判风险，
         # 攒的全是负面记录，还会把账号拖进 8040012 的坑里
-        return "todo", f"{label}未配置设备指纹，跳过（在 App 数据里取 _dx_app_ 的值填进账号）"
+        return "todo", f"{label}未配置设备指纹，跳过（每个账号要填一份独立指纹，重装 App 可换新）"
     if mode == "auto":
         return longhu.checkin(account, item["activity_no"], label)
 
@@ -134,7 +134,7 @@ def _app_entry(account: dict, item: dict, mode: str) -> tuple[str, str]:
     if state is True:
         return "already", f"{label}今日已签到"
     if state is False:
-        return "todo", f"{label}未签到，需在 App 内手动签（程序请求会被风控拒绝）"
+        return "todo", f"{label}未签到，需在 App 内手动签（当前为 manual 模式）"
     return "todo", f"{label}状态未知，需在 App 内确认"
 
 
