@@ -93,10 +93,30 @@ def notify(text: str):
 APP_MODES = ("auto", "manual", "off")
 
 
+def _dx_conflict(account: dict, accounts: list[dict]) -> list[dict]:
+    """检查设备指纹是否与其他启用账号共用。
+
+    2026-11-03 实测：同一个指纹用于多个账号会触发风控。因此指纹按 id 最小的
+    账号归属，其余共用者视为冲突、暂停签到，直到换成独立指纹（重装 App 可换）。
+
+    返回 id 更小的共用账号列表；空列表表示无冲突。
+    """
+    token = (account.get("dx_token") or "").strip()
+    if not token:
+        return []
+    smaller = [
+        a for a in accounts
+        if a["id"] != account["id"]
+        and (a.get("dx_token") or "").strip() == token
+        and a["id"] < account["id"]
+    ]
+    return smaller
+
+
 def _app_entry(account: dict, item: dict, mode: str) -> tuple[str, str]:
     """APP 专享签到入口。
 
-    auto   ：照旧真去签（目前必被 801810 拒绝，只用于排查时复现）
+    auto   ：用账号自己的设备指纹真去签（每个账号必须用独立指纹）
     manual ：只查状态，不打卡；未签就记 todo 交给每日汇总提醒人工去点
     off    ：完全不处理
     """
@@ -155,6 +175,20 @@ def run_account(account: dict, do_checkin: bool = True,
         result["error"] = payload
         logger.warning("[%s] 续期失败: %s", acc_name, payload)
 
+    # ---- 1.5 设备指纹冲突检查 ----
+    # 同一指纹被多个账号使用会触发风控（2026-11-03 实测）。指纹归 id 最小的
+    # 账号所有，后来共用它的账号直接暂停签到——继续跑只会拖累整个设备。
+    conflict = _dx_conflict(account, db.list_accounts(only_enabled=True))
+    dx_block = ""
+    if conflict:
+        names = "、".join(a["name"] for a in conflict)
+        dx_block = (
+            f"设备指纹与「{names}」共用，已暂停签到：同一指纹多账号会触发风控。"
+            "重装 App 可获得新指纹，之后点「换指纹」填入"
+        )
+        result["dx_conflict"] = [a["name"] for a in conflict]
+        db.add_log(acc_id, acc_name, "dx", "fail", dx_block)
+
     # ---- 2. 签到（小程序 + APP 两个入口，同一天各签一次） ----
     if app_mode is None:
         app_mode = (db.get_settings().get("app_checkin_mode") or "auto").strip().lower()
@@ -162,7 +196,7 @@ def run_account(account: dict, do_checkin: bool = True,
         app_mode = "auto"
 
     extra = []
-    if do_checkin:
+    if do_checkin and not dx_block:
         for item in longhu.ACTIVITIES:
             is_main = item["key"] == "mini"
             label = "" if is_main else "APP "
@@ -200,6 +234,13 @@ def run_account(account: dict, do_checkin: bool = True,
                 f"【龙湖签到】{acc_name} 失败\n"
                 f"续期: {payload}\n签到: {result['checkin_message']}\n{tail}"
             )
+
+    if do_checkin and dx_block:
+        # 单独用 conflict 状态：它不是偶发失败，重试没有意义，也不该触发
+        # 当天的失败重试排程，否则一天会重复告警 4 次。
+        result["checkin_status"] = "conflict"
+        result["checkin_message"] = dx_block
+        db.update_account(acc_id, last_status="conflict", last_message=dx_block)
 
     # ---- 3. 刷新资料 ----
     try:
@@ -240,10 +281,11 @@ def run_all(do_checkin: bool = True) -> list[dict]:
 
 
 def daily_summary(results: list[dict]):
-    """每日汇总推送：有失败才提醒，全成功则发一条简报。"""
+    """每日汇总推送：有失败/冲突才提醒，全成功则发一条简报。"""
     if not results:
         return
     failed = [r for r in results if r.get("checkin_status") == "fail"]
+    conflicts = [r for r in results if r.get("checkin_status") == "conflict"]
     ok = [r for r in results if r.get("checkin_status") == "ok"]
     already = [r for r in results if r.get("checkin_status") == "already"]
 
@@ -254,9 +296,10 @@ def daily_summary(results: list[dict]):
             if extra.get("status") in ("fail", "todo"):
                 app_lines.append(f"· {item['name']} {extra['name']}: {extra.get('message')}")
 
-    if failed:
-        lines = [f"【龙湖签到】{len(failed)} 个账号异常"]
-        for item in failed:
+    issues = failed + conflicts
+    if issues:
+        lines = [f"【龙湖签到】{len(issues)} 个账号需要处理"]
+        for item in issues:
             lines.append(f"· {item['name']}: {item.get('checkin_message') or item.get('error')}")
         lines.extend(app_lines)
         notify("\n".join(lines))

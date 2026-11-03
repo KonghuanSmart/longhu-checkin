@@ -218,10 +218,10 @@ def _task_headers(account: dict) -> dict:
         "token": account.get("token") or "",
         "Content-Type": "application/json;charset=UTF-8",
     }
-    # 设备指纹：优先用账号里存的 App 内真实指纹。udid/c1 现造的那个 40 位 token
-    # 在当前风控策略下会被判风险（8040012「网络故障」/ 801810「活动太火爆」），
-    # 而 App 里生成的顶象 token 能直接过，实测两个活动都能签。
-    fingerprint = (account.get("dx_token") or "").strip() or risk_token(account)
+    # 设备指纹：只认账号里存的 App 内真实指纹。不再用 udid/c1 现造——
+    # 那种 token 会被判风险（8040012 / 801810），而且缓存是进程级的，
+    # 多个账号会共用同一份，本身就是风控特征。没配就空着发，让上游明确拒绝。
+    fingerprint = (account.get("dx_token") or "").strip()
     if fingerprint:
         headers["X-LF-DXRisk-Token"] = fingerprint
     return headers

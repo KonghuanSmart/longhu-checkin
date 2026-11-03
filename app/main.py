@@ -47,20 +47,33 @@ def index():
 # 账号
 # --------------------------------------------------------------------------
 
-def _decorate(account: dict) -> dict:
+def _decorate(account: dict, usage: dict[str, list[dict]] | None = None) -> dict:
     item = dict(account)
     for key in ("token", "user_agent", "api_key", "dx_token"):  # 敏感字段不外发
         item.pop(key, None)
     token = account.get("token") or ""
     item["token_mask"] = f"{token[:6]}...{token[-4:]}" if len(token) > 12 else "****"
-    item["has_dx"] = bool((account.get("dx_token") or "").strip())
+
+    # 设备指纹状态。同一指纹用于多个账号会触发风控（2026-11-03 实测），
+    # 指纹归 id 最小的账号所有，其余账号会被标记为冲突并暂停签到。
+    dx = (account.get("dx_token") or "").strip()
+    item["has_dx"] = bool(dx)
+    # 只看启用中的账号，与运行时 _dx_conflict 的口径保持一致
+    shared = [
+        a for a in (usage or {}).get(dx, [])
+        if a["id"] != account["id"] and a.get("enabled")
+    ] if dx else []
+    item["dx_shared"] = bool(shared)
+    item["dx_shared_with"] = [a["name"] for a in shared]
+    item["dx_conflict"] = any(a["id"] < account["id"] for a in shared)
     item["days_left"] = runner.days_left(account.get("expire_at"))
     return item
 
 
 @app.get("/api/accounts")
 def api_accounts():
-    return [_decorate(acc) for acc in db.list_accounts()]
+    usage = db.dx_usage()
+    return [_decorate(acc, usage) for acc in db.list_accounts()]
 
 
 @app.post("/api/accounts/bind")
@@ -90,6 +103,18 @@ async def api_bind(
         "bu_code": parsed.get("bu_code", "C20400"),
         "channel": parsed.get("channel", "C2"),
     }
+
+    # 一账号一指纹：共用指纹会触发风控，提前拦掉，别等跑起来才暴露。
+    dx_value = dx_token.strip()
+    if dx_value:
+        others = db.accounts_with_dx(dx_value)
+        if others:
+            names = "、".join(a["name"] for a in others)
+            raise HTTPException(
+                400,
+                f"这个指纹已被「{names}」占用。同一指纹用于多个账号会触发风控，"
+                "请换一个独立指纹（重装 App 可获取新指纹）。",
+            )
 
     # 校验 token：先直接查资料，失败则尝试续期后重试
     profile = None
@@ -122,7 +147,7 @@ async def api_bind(
         "token": account["token"],
         "user_agent": account["user_agent"],
         "api_key": account["api_key"],
-        "dx_token": dx_token.strip() or None,
+        "dx_token": dx_value or None,
         "bu_code": account["bu_code"],
         "channel": account["channel"],
         "growth_value": profile.get("growth_value", 0),
@@ -139,13 +164,26 @@ async def api_bind(
 @app.post("/api/accounts/{account_id}/dx")
 def api_set_dx(account_id: int, dx_token: str = Form("")):
     """补填 App 内真实设备指纹（顶象 token）。"""
-    if not db.get_account(account_id):
+    account = db.get_account(account_id)
+    if not account:
         raise HTTPException(404, "账号不存在")
     value = dx_token.strip()
     if value and (len(value) < 20 or " " in value):
         raise HTTPException(400, "指纹格式不对，应形如 6ae93a6cUDMfhHgK6eYXWjqtu1qMG9bAJdij8Er1")
-    db.update_account(account_id, dx_token=value)
-    db.add_log(account_id, (db.get_account(account_id) or {}).get("name", ""), "dx",
+
+    # 一账号一指纹：共用指纹会被上游判成同一设备多账号，直接触发风控。
+    if value:
+        others = db.accounts_with_dx(value, exclude_id=account_id)
+        if others:
+            names = "、".join(a["name"] for a in others)
+            raise HTTPException(
+                400,
+                f"这个指纹已被「{names}」占用。同一指纹用于多个账号会触发风控，"
+                "请换一个独立指纹（重装 App 可获取新指纹）。",
+            )
+
+    db.update_account(account_id, dx_token=value or None)
+    db.add_log(account_id, account["name"], "dx",
                "ok" if value else "fail", "已保存设备指纹" if value else "已清除设备指纹")
     return {"ok": True, "has_dx": bool(value)}
 
@@ -184,7 +222,7 @@ def api_account_logs(account_id: int, limit: int = 20):
 def api_overview():
     accounts = db.list_accounts()
     today = date.today().isoformat()
-    stats = {"ok": 0, "already": 0, "fail": 0, "pending": 0}
+    stats = {"ok": 0, "already": 0, "fail": 0, "pending": 0, "conflict": 0}
     min_days = None
 
     for acc in accounts:

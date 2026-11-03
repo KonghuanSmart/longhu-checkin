@@ -75,6 +75,9 @@ def main() -> int:
         print("填进看板的信息：")
         print(json.dumps({"token": login["token"], "lmId": login.get("lmId"), "dx_token": dx},
                          ensure_ascii=False, indent=2))
+        print()
+        print("注意：每个账号必须用不同的指纹，共用同一指纹会触发风控。")
+        print("      重装 App 会生成新指纹——装好后重新登录该账号，再跑一次本脚本取新值。")
     if not found:
         print("没找到已登录的龙湖 App。确认 App 在本机登录过，路径：", PREFS)
         return 1

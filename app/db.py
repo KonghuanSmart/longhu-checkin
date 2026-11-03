@@ -164,6 +164,37 @@ def delete_account(account_id: int):
         conn.execute("DELETE FROM logs WHERE account_id = ?", (account_id,))
 
 
+def dx_usage() -> dict[str, list[dict]]:
+    """按设备指纹聚合账号，用于检查是否有多账号共用同一指纹。
+
+    实测同一指纹被多个账号使用会触发风控（2026-11-03），所以这属于
+    配置错误，需要在保存和运行时都拦住。
+    """
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, name, enabled, dx_token FROM accounts "
+            "WHERE dx_token IS NOT NULL AND TRIM(dx_token) <> '' ORDER BY id"
+        ).fetchall()
+    usage: dict[str, list[dict]] = {}
+    for row in rows:
+        usage.setdefault(row["dx_token"].strip(), []).append(dict(row))
+    return usage
+
+
+def accounts_with_dx(dx_token: str, exclude_id: int | None = None) -> list[dict]:
+    """返回使用了指定指纹的其他账号（按 id 升序）。"""
+    token = (dx_token or "").strip()
+    if not token:
+        return []
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT id, name, enabled FROM accounts "
+            "WHERE dx_token IS NOT NULL AND TRIM(dx_token) = ? ORDER BY id",
+            (token,),
+        ).fetchall()
+    return [dict(row) for row in rows if row["id"] != exclude_id]
+
+
 # --------------------------------------------------------------------------
 # logs
 # --------------------------------------------------------------------------

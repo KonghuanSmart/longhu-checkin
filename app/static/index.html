@@ -231,7 +231,7 @@
         <option value="off">完全不处理</option>
       </select>
     </div>
-    <div class="tips">APP 入口要求 <code>X-LF-DXRisk-Token</code> 是 App 内生成的真实指纹，否则会回 <code>801810</code>／<code>8040012</code> 这类误导性报错。账号卡片上点「补指纹」填入即可；Mac 上装了龙湖 App 的话，跑 <code>python tools/read_mac_app.py</code> 能直接读出来。没配指纹时程序会自动跳过 APP 入口，不硬打。</div>
+    <div class="tips">APP 入口要求 <code>X-LF-DXRisk-Token</code> 是 App 内生成的真实指纹，否则会回 <code>801810</code>／<code>8040012</code> 这类误导性报错。<br><b>每个账号必须用不同的指纹</b>——同一指纹用于多个账号会触发风控。重装 App 会生成新指纹；Mac 上跑 <code>python tools/read_mac_app.py</code> 可直接读出。没配指纹时会跳过 APP 入口，共用指纹的账号会被暂停签到。</div>
     <div class="dialog-foot">
       <button id="btnCancelSet" class="ghost">取消</button>
       <button id="btnSaveSet" class="primary">保存</button>
@@ -273,6 +273,7 @@ function statusBadge(acc) {
   if (!ranToday) return ['b-pending', '待执行'];
   if (acc.last_status === "ok") return ['b-ok', '已签到'];
   if (acc.last_status === "already") return ['b-already', '今日已签'];
+  if (acc.last_status === "conflict") return ['b-fail', '指纹冲突'];
   if (acc.last_status === "fail") return ['b-fail', '失败'];
   return ['b-pending', '待执行'];
 }
@@ -282,7 +283,7 @@ function renderOverview(o) {
   $("overview").innerHTML = `
     <div class="stat"><div class="label">账号总数</div><div class="value">${o.total}<small>个</small></div></div>
     <div class="stat"><div class="label">今日签到成功</div><div class="value" style="color:var(--green)">${(s.ok || 0) + (s.already || 0)}<small>个</small></div></div>
-    <div class="stat"><div class="label">待执行 / 失败</div><div class="value" style="color:${(s.fail||0) > 0 ? 'var(--red)' : 'var(--amber)'}">${(s.pending || 0) + (s.fail || 0)}<small>个</small></div></div>
+    <div class="stat"><div class="label">待执行 / 失败</div><div class="value" style="color:${((s.fail||0) + (s.conflict||0)) > 0 ? 'var(--red)' : 'var(--amber)'}">${(s.pending || 0) + (s.fail || 0) + (s.conflict || 0)}<small>个</small></div></div>
     <div class="stat"><div class="label">最短有效期</div><div class="value">${o.min_days === null ? "—" : o.min_days}<small>天</small></div></div>
     <div class="stat"><div class="label">下次执行</div><div class="value" style="font-size:15px;padding-top:6px">${o.next_run || "—"}</div></div>
   `;
@@ -301,12 +302,17 @@ function renderAccounts() {
     const pct = days === null ? 0 : Math.max(2, Math.min(100, (days / 30) * 100));
     const barCls = days === null ? "" : days <= 3 ? "danger" : days <= 7 ? "warn" : "";
     const dayText = days === null ? "未知" : `剩 ${days} 天`;
+    const sharedWith = (a.dx_shared_with || []).join("、");
+    const dxLabel = !a.has_dx ? "待补" : a.dx_conflict ? "与他人共用" : a.dx_shared ? "已配置（被共用）" : "已配置";
+    const dxColor = !a.has_dx ? "var(--amber)" : a.dx_conflict ? "var(--red)" : "var(--green)";
+    const dxTitle = sharedWith ? `与「${sharedWith}」使用同一指纹，会触发风控` : "";
     return `
     <div class="card" data-id="${a.id}">
       <div class="card-head">
         <div>
           <div class="card-name">${escapeHtml(a.name)}</div>
-          <div class="card-sub">${a.token_mask || ""} · <span style="color:${a.has_dx ? "var(--green)" : "var(--amber)"}">指纹${a.has_dx ? "已配置" : "待补"}</span></div>
+          <div class="card-sub">${a.token_mask || ""} · <span style="color:${dxColor}" title="${escapeHtml(dxTitle)}">指纹${dxLabel}</span></div>
+          ${a.dx_conflict ? `<div style="margin-top:6px;font-size:12px;color:var(--red)">已暂停签到：与「${escapeHtml(sharedWith)}」共用指纹，重装 App 换新指纹</div>` : ""}
         </div>
         <span class="badge ${cls}">${label}</span>
       </div>
@@ -425,8 +431,9 @@ $("accounts").addEventListener("click", async (ev) => {
   if (dxId) {
     const value = prompt(
       "粘贴 App 内的顶象设备指纹（形如 6ae93a6cUDMfhHgK6eYXWjqtu1qMG9bAJdij8Er1）。\n" +
-      "取法：App 数据目录里 localStorage 的 _dx_app_d1a43734fc59aeae9f1562dbd70fdf54，\n" +
-      "在 Mac 上可直接跑 python tools/read_mac_app.py 读出来。留空表示清除。"
+      "注意：每个账号必须用不同的指纹，共用会触发风控。\n" +
+      "重装 App 会生成新指纹；Mac 上跑 python tools/read_mac_app.py 可直接读出。\n" +
+      "留空表示清除。"
     );
     if (value === null) return;
     try {
@@ -448,7 +455,7 @@ $("accounts").addEventListener("click", async (ev) => {
       const msg = r.checkin_status === "ok" ? r.checkin_message
         : r.checkin_status === "already" ? "今日已签到"
         : (r.checkin_message || r.error || "失败");
-      toast(msg, r.checkin_status === "fail");
+      toast(msg, r.checkin_status === "fail" || r.checkin_status === "conflict");
       await loadAll();
     } catch (e) {
       toast(e.message, true);
