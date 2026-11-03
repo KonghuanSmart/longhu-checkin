@@ -133,11 +133,16 @@ def run_account(account: dict, do_checkin: bool = True) -> dict:
         db.add_log(acc_id, acc_name, "checkin", status, message)
         db.update_account(acc_id, last_status=status, last_message=message)
 
-        if not ok and status == "fail":
+        if status == "fail":
+            # 签到失败一律告警。之前只在「续期也失败」时才推，导致签到被拒
+            # （例如上游返回「网络故障，请稍后再试」）时完全静默。
+            if not ok:
+                tail = "该账号需要重新导入凭据。"
+            else:
+                tail = "将按排程在当天内自动重试。"
             notify(
                 f"【龙湖签到】{acc_name} 失败\n"
-                f"续期: {payload}\n签到: {message}\n"
-                f"该账号需要重新导入凭据。"
+                f"续期: {payload}\n签到: {message}\n{tail}"
             )
 
     # ---- 3. 刷新资料 ----

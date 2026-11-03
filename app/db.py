@@ -53,6 +53,8 @@ DEFAULT_SETTINGS = {
     "checkin_time": "08:00",
     "checkin_jitter": "60",
     "last_run_date": "",
+    "retry_at": "",
+    "retry_count": "0",
     "webhook_url": "",
     "auto_refresh": "1",
 }

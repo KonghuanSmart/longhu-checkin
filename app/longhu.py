@@ -147,12 +147,9 @@ def refresh_token(account: dict) -> tuple[bool, str]:
     return False, res2.get("message") or "key2token 未返回 token"
 
 
-def checkin(account: dict) -> tuple[str, str]:
-    """每日签到。返回 (status, message)
-
-    status: ok（签到成功）/ already（今日已签）/ fail（失败）
-    """
-    headers = {
+def _task_headers(account: dict) -> dict:
+    """活动接口（page-info / clock）共用的请求头。"""
+    return {
         "User-Agent": account.get("user_agent") or DEFAULT_UA,
         "Origin": "https://longzhu.longfor.com",
         "Referer": "https://longzhu.longfor.com/",
@@ -167,6 +164,58 @@ def checkin(account: dict) -> tuple[str, str]:
         "token": account.get("token") or "",
         "Content-Type": "application/json;charset=UTF-8",
     }
+
+
+def sign_state(account: dict) -> bool | None:
+    """查询「今天是否已签到」。True=已签，False=未签，None=查不到。
+
+    以服务端返回的日历为准，比依赖 clock 接口的 is_popup 可靠：
+    clock 在「已签到」和「签到被拒」两种情况下都可能不返回奖励明细。
+    """
+    try:
+        res = _request(
+            "POST",
+            f"{BASE}/lmarketing-task-api-mvc-prod/openapi/task/v1/signature/page-info",
+            _task_headers(account),
+            {"activity_no": ACTIVITY_NO},
+        )
+    except LonghuError:
+        return None
+    if res.get("code") != "0000":
+        return None
+
+    data = res.get("data") or {}
+    # 用服务端时间判断“今天”，避免容器时区与龙湖不一致
+    today = datetime.now()
+    raw = data.get("current_date_time")
+    if raw:
+        try:
+            today = datetime.fromtimestamp(int(raw) / 1000)
+        except (TypeError, ValueError):
+            pass
+
+    for item in data.get("seven_days_signs") or []:
+        try:
+            day = (int(item.get("sign_year")), int(item.get("sign_month")), int(item.get("sign_day")))
+        except (TypeError, ValueError):
+            continue
+        if day == (today.year, today.month, today.day):
+            # 20 = 已签到，10 = 未签到
+            return int(item.get("sign_status") or 0) == 20
+    return None
+
+
+def checkin(account: dict) -> tuple[str, str]:
+    """每日签到。返回 (status, message)
+
+    status: ok（签到成功）/ already（今日已签）/ fail（失败）
+    """
+    # 先查状态：已签就不要再打签到接口，免得无谓地触发风控
+    before = sign_state(account)
+    if before is True:
+        return "already", "今日已签到"
+
+    headers = _task_headers(account)
     try:
         res = _request(
             "POST",
@@ -175,23 +224,35 @@ def checkin(account: dict) -> tuple[str, str]:
             {"activity_no": ACTIVITY_NO},
         )
     except LonghuError as exc:
-        return "fail", str(exc)
+        return "fail", f"签到请求失败：{exc}"
 
-    code = res.get("code")
+    code = str(res.get("code") or "")
     data = res.get("data") or {}
+    message = res.get("message") or ""
 
-    if code != "0000":
-        message = res.get("message") or "未知错误"
-        if "未登录" in message or "登录已过期" in message:
-            return "fail", "鉴权失败：token 已失效，需要重新导入"
-        return "fail", f"签到失败：{message}"
+    if code == "0000":
+        if data.get("is_popup") == 1:
+            reward = 0
+            for item in (data.get("reward_info") or []):
+                reward += int(item.get("reward_num") or 0)
+            return "ok", f"签到成功，获得 {reward} 积分"
+        # is_popup=0 有两种可能：本来已签，或接口假成功。用日历复核。
+        after = sign_state(account)
+        if after is False:
+            return "fail", "签到接口返回成功但日历仍显示未签，请稍后重试"
+        return "already", "今日已签到"
 
-    if data.get("is_popup") == 1:
-        reward = 0
-        for item in (data.get("reward_info") or []):
-            reward += int(item.get("reward_num") or 0)
-        return "ok", f"签到成功，获得 {reward} 积分"
-    return "already", "今日已签到"
+    if "未登录" in message or "登录已过期" in message or code == "801001":
+        return "fail", "鉴权失败：token 已失效，需要重新导入"
+
+    # 兜底：接口报错但可能实际上已经签上（历史上出现过报错但状态已更新）
+    if sign_state(account) is True:
+        return "ok", f"签到成功（接口返回 {code}，已按日历确认）"
+
+    if before is False:
+        detail = f"{message or '未知错误'}"
+        return "fail", f"签到失败：{detail}（code={code or '无'}）"
+    return "fail", f"签到失败：{message or '未知错误'}（code={code or '无'}）"
 
 
 def fetch_profile(account: dict) -> dict:
