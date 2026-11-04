@@ -274,6 +274,7 @@ function statusBadge(acc) {
   if (acc.last_status === "ok") return ['b-ok', '已签到'];
   if (acc.last_status === "already") return ['b-already', '今日已签'];
   if (acc.last_status === "conflict") return ['b-fail', '指纹冲突'];
+  if (acc.last_status === "risk") return ['b-fail', '风控拒绝'];
   if (acc.last_status === "fail") return ['b-fail', '失败'];
   return ['b-pending', '待执行'];
 }
@@ -283,7 +284,7 @@ function renderOverview(o) {
   $("overview").innerHTML = `
     <div class="stat"><div class="label">账号总数</div><div class="value">${o.total}<small>个</small></div></div>
     <div class="stat"><div class="label">今日签到成功</div><div class="value" style="color:var(--green)">${(s.ok || 0) + (s.already || 0)}<small>个</small></div></div>
-    <div class="stat"><div class="label">待执行 / 失败</div><div class="value" style="color:${((s.fail||0) + (s.conflict||0)) > 0 ? 'var(--red)' : 'var(--amber)'}">${(s.pending || 0) + (s.fail || 0) + (s.conflict || 0)}<small>个</small></div></div>
+    <div class="stat"><div class="label">待执行 / 失败</div><div class="value" style="color:${((s.fail||0) + (s.conflict||0) + (s.risk||0)) > 0 ? 'var(--red)' : 'var(--amber)'}">${(s.pending || 0) + (s.fail || 0) + (s.conflict || 0) + (s.risk || 0)}<small>个</small></div></div>
     <div class="stat"><div class="label">最短有效期</div><div class="value">${o.min_days === null ? "—" : o.min_days}<small>天</small></div></div>
     <div class="stat"><div class="label">下次执行</div><div class="value" style="font-size:15px;padding-top:6px">${o.next_run || "—"}</div></div>
   `;
@@ -339,7 +340,8 @@ function renderLogs(logs) {
     return;
   }
   $("logs").innerHTML = logs.map((l) => {
-    const scls = l.status === "ok" ? "s-ok" : l.status === "fail" ? "s-fail"
+    const scls = l.status === "ok" ? "s-ok"
+      : (l.status === "fail" || l.status === "risk") ? "s-fail"
       : l.status === "already" ? "s-already" : l.status === "todo" ? "s-todo" : "";
     const names = { refresh: "续期", checkin: "签到", checkin_app: "APP签到", query: "查询", bind: "绑定", run: "执行", dx: "指纹" };
     return `<div class="log-row">
@@ -455,7 +457,7 @@ $("accounts").addEventListener("click", async (ev) => {
       const msg = r.checkin_status === "ok" ? r.checkin_message
         : r.checkin_status === "already" ? "今日已签到"
         : (r.checkin_message || r.error || "失败");
-      toast(msg, r.checkin_status === "fail" || r.checkin_status === "conflict");
+      toast(msg, r.checkin_status === "fail" || r.checkin_status === "conflict" || r.checkin_status === "risk");
       await loadAll();
     } catch (e) {
       toast(e.message, true);

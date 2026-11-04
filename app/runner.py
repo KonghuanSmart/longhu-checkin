@@ -285,6 +285,7 @@ def daily_summary(results: list[dict]):
     if not results:
         return
     failed = [r for r in results if r.get("checkin_status") == "fail"]
+    risks = [r for r in results if r.get("checkin_status") == "risk"]
     conflicts = [r for r in results if r.get("checkin_status") == "conflict"]
     ok = [r for r in results if r.get("checkin_status") == "ok"]
     already = [r for r in results if r.get("checkin_status") == "already"]
@@ -293,10 +294,10 @@ def daily_summary(results: list[dict]):
     app_lines = []
     for item in results:
         for extra in item.get("extra_signs") or []:
-            if extra.get("status") in ("fail", "todo"):
+            if extra.get("status") in ("fail", "todo", "risk"):
                 app_lines.append(f"· {item['name']} {extra['name']}: {extra.get('message')}")
 
-    issues = failed + conflicts
+    issues = failed + risks + conflicts
     if issues:
         lines = [f"【龙湖签到】{len(issues)} 个账号需要处理"]
         for item in issues:

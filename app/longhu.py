@@ -277,12 +277,16 @@ CODE_HINT = {
     "8040016": "风控拦截：设备指纹不被认可",
 }
 
+# 风控类拒绝不是偶发失败：文案本身就是「明日再来」，当天重试只会继续给
+# 风控送样本、拉低评分。单独返回 risk 状态，让调度器不排当天重试。
+RISK_CODES = {"801810", "801811", "801812", "8040012", "8040016"}
+
 
 def checkin(account: dict, activity_no: str = ACTIVITY_NO,
             label: str = "") -> tuple[str, str]:
     """每日签到。返回 (status, message)
 
-    status: ok（签到成功）/ already（今日已签）/ fail（失败）
+    status: ok（签到成功）/ already（今日已签）/ risk（风控拒绝）/ fail（其他失败）
     """
     tag = f"{label}" if label else ""
     # 先查状态：已签就不要再打签到接口，免得无谓地触发风控
@@ -326,6 +330,9 @@ def checkin(account: dict, activity_no: str = ACTIVITY_NO,
 
     hint = CODE_HINT.get(code, "")
     detail = f"{message or '未知错误'}（code={code or '无'}{'，' + hint if hint else ''}）"
+    if code in RISK_CODES:
+        # 风控拒绝：当天重试无意义，标 risk 不进入失败重试排程
+        return "risk", f"{tag}签到失败：{detail}"
     return "fail", f"{tag}签到失败：{detail}"
 
 

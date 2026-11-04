@@ -222,7 +222,7 @@ def api_account_logs(account_id: int, limit: int = 20):
 def api_overview():
     accounts = db.list_accounts()
     today = date.today().isoformat()
-    stats = {"ok": 0, "already": 0, "fail": 0, "pending": 0, "conflict": 0}
+    stats = {"ok": 0, "already": 0, "fail": 0, "pending": 0, "conflict": 0, "risk": 0}
     min_days = None
 
     for acc in accounts:
