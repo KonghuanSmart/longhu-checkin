@@ -18,8 +18,15 @@
 之后打开 App 的签到页，SDK 会重新生成一份新指纹。
 
 用法：
-    python tools/reset_dx_identity.py            # 只看，不改（默认）
-    python tools/reset_dx_identity.py --apply    # 真的动手，会先备份
+    python tools/reset_dx_identity.py               # 只看，不改（默认）
+    python tools/reset_dx_identity.py --purge       # 删容器重建 = 卸载重装（推荐）
+    python tools/reset_dx_identity.py --rebuild     # 挪走容器，保留旧的可随时挪回
+    python tools/reset_dx_identity.py --apply       # 只清顶象键，已证实换不了指纹
+
+换指纹的唯一有效手段是「让容器重建」：
+    - 卸载重装：卸载会删掉容器，所以有效
+    - 单纯替换 .app：容器还在，所以无效（2026-11-04 实测，一个字符都没变）
+--purge 直接删容器，效果等同卸载重装，但不用重新下载 122MB 的安装包。
 
 风险：换了指纹等于换了设备。同一账号从「新设备」登录，可能触发二次验证，
       已有的签到连续天数不受影响，但当天首次签到仍要过一次滑块。
@@ -122,6 +129,51 @@ def apply(container: str, plist_path: str) -> str:
     return f"{backup}（清掉 {cleared} 条 localStorage 指纹）"
 
 
+def purge(containers: list[tuple[str, str]]) -> int:
+    """等价于「卸载重装」：删掉容器让系统重建。
+
+    为什么卸载重装能换指纹？因为卸载会把 `~/Library/Containers/<ID>` 一起删掉，
+    重装后系统新建一个空容器，SDK 只能重新生成身份。反过来，只替换 /Applications
+    里的 .app、不动容器，指纹一个字符都不会变 —— 2026-11-04 那次「重装」就是这样，
+    容器 birth 还是 2025-12-17。
+
+    所以真正起作用的是「容器被删」，删 App 只是顺带的。本函数只删容器、不动 .app，
+    效果与卸载重装完全一致，但省掉一次下载安装。删除前会完整备份，可回退。
+    """
+    if not os.path.isdir(APP_PATH):
+        print(f"⚠️  {APP_PATH} 不存在。先把 App 装回来再跑。")
+        return 1
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_dir = os.path.join(BACKUP_ROOT, f"{stamp}-containers")
+    os.makedirs(backup_dir, exist_ok=True)
+
+    for container, _ in containers:
+        name = os.path.basename(container)
+        dest = os.path.join(backup_dir, name)
+        # 用 cp -R 而不是 copytree：容器里有 socket 和特殊权限文件，copytree 会炸
+        r = subprocess.run(["cp", "-R", container, dest], capture_output=True)
+        if r.returncode != 0 and not os.path.isdir(dest):
+            print(f"❌ 备份 {name} 失败：{r.stderr.decode()[:200]}")
+            return 1
+        try:
+            shutil.rmtree(container)
+        except Exception as exc:
+            print(f"❌ 删除 {name} 失败：{exc}")
+            print("   确认已授予「完全磁盘访问权限」，且 App 完全退出。")
+            return 1
+        print(f"✅ {name} 已删除（备份 {dest}）")
+
+    subprocess.run(["killall", "cfprefsd"], capture_output=True)
+    subprocess.run(["open", "-a", APP_PATH], capture_output=True)
+    print("\n已启动 App。接下来：")
+    print("  1. 登录（token 与容器绑定，换容器必须重新登录）")
+    print("  2. 进入签到页 —— 顶象 SDK 在这一步才会生成新指纹")
+    print("  3. python tools/read_mac_app.py 读出新指纹")
+    print(f"\n要回退：把 {backup_dir} 里的目录拷回 ~/Library/Containers/。")
+    return 0
+
+
 def rebuild(containers: list[tuple[str, str]]) -> int:
     """把容器整体挪走，让系统在下次启动时新建一个 —— 这是实测唯一能换指纹的办法。
 
@@ -157,7 +209,9 @@ def rebuild(containers: list[tuple[str, str]]) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="清顶象键（诊断用，已证实换不了指纹）")
-    ap.add_argument("--rebuild", action="store_true", help="把容器挪走重建，真正换指纹")
+    ap.add_argument("--purge", action="store_true",
+                    help="删掉容器重建，等价于卸载重装（先备份，可回退）")
+    ap.add_argument("--rebuild", action="store_true", help="把容器挪走而不是删除，同样能换指纹")
     args = ap.parse_args()
 
     containers = find_containers()
@@ -168,6 +222,9 @@ def main() -> int:
     if app_running():
         print("⚠️  龙湖 App 还开着。请先完全退出（⌘Q），否则改不动。")
         return 1
+
+    if args.purge:
+        return purge(containers)
 
     if args.rebuild:
         return rebuild(containers)
