@@ -214,13 +214,18 @@ def _task_headers(account: dict) -> dict:
         "X-GAIA-API-KEY": API_KEY_MAIN,
         "X-LF-UserToken": account.get("token") or "",
         "X-LF-Channel": account.get("channel", "C2"),
+        # 真实 App 未过滑块时，前端就是把这个字符串原样发出去的（抓包可见）。
+        # 过了滑块会变成 "<token>:<指纹>"，两个值用冒号拼接。
         "X-LF-DXRisk-Captcha-Token": "undefined",
         "token": account.get("token") or "",
         "Content-Type": "application/json;charset=UTF-8",
     }
-    # 设备指纹：只认账号里存的 App 内真实指纹。不再用 udid/c1 现造——
-    # 那种 token 会被判风险（8040012 / 801810），而且缓存是进程级的，
-    # 多个账号会共用同一份，本身就是风控特征。没配就空着发，让上游明确拒绝。
+    # 设备指纹：只认账号里存的 App 内真实指纹，不再用 udid/c1 兜底——
+    # 那个接口的缓存是进程级的，多个账号会共用同一份，本身就是风控特征。
+    #
+    # 2026-11-05 抓包补充：指纹本身不是门槛。同一指纹未带滑块凭证时被
+    # 8040012 拦下，过完滑块立刻成功；签完之后再用同一指纹打 clock 直接
+    # 0000。所以真正缺的是下面那个 captcha token，不是指纹。
     fingerprint = (account.get("dx_token") or "").strip()
     if fingerprint:
         headers["X-LF-DXRisk-Token"] = fingerprint
@@ -267,19 +272,41 @@ def sign_state(account: dict, activity_no: str = ACTIVITY_NO) -> bool | None:
 
 
 CODE_HINT = {
-    # 这两个码的文案都是误导性的，实测根因都是「设备指纹不被认可」：
-    # 用 udid/c1 现造的 40 位 token 会稳定拿到这两个码，换成 App 内生成的
-    # 顶象指纹（_dx_app_ 那一项）后，同一账号同一时刻立刻签成功。
-    "801810": "风控拒绝：设备指纹不被认可（换成 App 内的真实指纹）",
+    # 2026-11-05 抓包实测修正：8040012 与设备指纹无关。
+    # 同一账号、同一指纹，未带 X-LF-DXRisk-Captcha-Token 时必被 8040012 拦下；
+    # 在 App 里拖过顶象滑块、拿到 token 后立刻签到成功（+5 成长值 +10 连签）。
+    # 签完之后再用同一指纹打 clock，直接返回 0000 —— 证明指纹是可用的，
+    # 真正缺的是「当天首次签到的人机验证凭证」。
+    "801810": "风控拒绝：今日签到需要人机验证（在 App 内签到一次即可）",
     "801811": "需要滑块验证（顶象 dx-captcha）",
-    "801812": "风控拒绝：设备指纹不被认可（同上）",
-    "8040012": "风控拦截：设备指纹不被认可",
-    "8040016": "风控拦截：设备指纹不被认可",
+    "801812": "风控拒绝：今日签到需要人机验证（在 App 内签到一次即可）",
+    "8040012": "需要人机验证：当天首次签到必须过滑块（在 App 内签到一次）",
+    "8040016": "需要人机验证：当天首次签到必须过滑块（在 App 内签到一次）",
 }
 
 # 风控类拒绝不是偶发失败：文案本身就是「明日再来」，当天重试只会继续给
 # 风控送样本、拉低评分。单独返回 risk 状态，让调度器不排当天重试。
 RISK_CODES = {"801810", "801811", "801812", "8040012", "8040016"}
+
+
+def _solve_captcha(account: dict) -> tuple[str | None, str]:
+    """过滑块换 captcha token。没开启（默认）就直接返回 off。"""
+    try:
+        from . import captcha as captcha_mod
+    except Exception as exc:  # 缺依赖不应该影响正常签到
+        return None, f"求解器不可用：{exc}"
+    mode = captcha_mod.mode_from_env()
+    if mode == "off":
+        return None, "off"
+    device = (account.get("dx_token") or "").strip()
+    if not device:
+        return None, "缺少设备指纹"
+    return captcha_mod.solve(device, mode=mode)
+
+
+def _captcha_header(token: str, device: str) -> str:
+    """接口要求的格式：token 在前，设备指纹在后，冒号拼接。"""
+    return f"{token}:{device}" if device else token
 
 
 def checkin(account: dict, activity_no: str = ACTIVITY_NO,
@@ -331,6 +358,35 @@ def checkin(account: dict, activity_no: str = ACTIVITY_NO,
     hint = CODE_HINT.get(code, "")
     detail = f"{message or '未知错误'}（code={code or '无'}{'，' + hint if hint else ''}）"
     if code in RISK_CODES:
+        # 8040012/8040016 = 当天首次签到缺人机验证凭证。配了求解器就先过滑块再重试一次。
+        # 重试只做一次：同一张图第 3 次会被判 4011 HIGH_RISK，越试越糟。
+        if code in ("8040012", "8040016"):
+            token, why = _solve_captcha(account)
+            if token:
+                device = (account.get("dx_token") or "").strip()
+                retry_headers = _task_headers(account)
+                retry_headers["X-LF-DXRisk-Captcha-Token"] = _captcha_header(token, device)
+                try:
+                    res2 = _request(
+                        "POST",
+                        f"{BASE}/lmarketing-task-api-mvc-prod/openapi/task/v1/signature/clock",
+                        retry_headers,
+                        {"activity_no": activity_no},
+                    )
+                except LonghuError as exc:
+                    return "fail", f"{tag}过滑块后签到请求失败：{exc}"
+                code2 = str(res2.get("code") or "")
+                data2 = res2.get("data") or {}
+                if code2 == "0000" and data2.get("is_popup") == 1:
+                    reward = 0
+                    for item in (data2.get("reward_info") or []):
+                        reward += int(item.get("reward_num") or 0)
+                    return "ok", f"{tag}签到成功（已过滑块），获得 {reward} 积分"
+                if sign_state(account, activity_no) is True:
+                    return "ok", f"{tag}签到成功（已过滑块，按日历确认）"
+                detail = f"{detail}；过滑块后仍失败（code={code2 or '无'}）"
+            elif why and why != "off":
+                detail = f"{detail}；滑块求解未完成：{why}"
         # 风控拒绝：当天重试无意义，标 risk 不进入失败重试排程
         return "risk", f"{tag}签到失败：{detail}"
     return "fail", f"{tag}签到失败：{detail}"
