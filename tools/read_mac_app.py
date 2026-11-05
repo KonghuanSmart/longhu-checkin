@@ -16,6 +16,7 @@ import plistlib
 import re
 import sqlite3
 import sys
+from datetime import datetime
 
 PREFS = os.path.expanduser(
     "~/Library/Containers/*/Data/Library/Preferences/com.longfor.supera.plist"
@@ -56,31 +57,78 @@ def read_dx(container: str) -> str:
     return ""
 
 
+def read_identity_keys(plist_path: str) -> dict:
+    """顶象设备身份真正落脚的地方。
+
+    WebKit 里的 _dx_app_ 只是缓存：删掉它 SDK 会重新算出一个一模一样的值，
+    因为源头在这里（App 自己的容器 NSUserDefaults）——或者更外层的 IDFV。
+    所以「重装后指纹变不变」等价于「重装有没有重建这个容器」。
+    """
+    try:
+        with open(plist_path, "rb") as fh:
+            data = plistlib.load(fh)
+    except Exception:
+        return {}
+    out = {}
+    for key in ("DxriskAppID:appId", "MAUserDeviceIdKey"):
+        if key in data:
+            val = data[key]
+            text = val if isinstance(val, str) else repr(val)
+            out[key] = text
+    return out
+
+
+def container_birth(path: str) -> str:
+    try:
+        st = os.stat(path)
+        return datetime.fromtimestamp(st.st_birthtime).strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return "?"
+
+
 def main() -> int:
-    found = False
-    for plist_path in glob.glob(PREFS):
+    found = []
+    for plist_path in sorted(glob.glob(PREFS)):
         container = plist_path.split("/Library/Containers/")[1].split("/")[0]
         container = os.path.expanduser(f"~/Library/Containers/{container}")
         login = read_login(plist_path)
         if not login.get("token"):
             continue
-        found = True
+        found.append((container, plist_path, login))
+
+    if not found:
+        print("没找到已登录的龙湖 App。确认 App 在本机登录过，路径：", PREFS)
+        return 1
+
+    if len(found) > 1:
+        print(f"⚠️  发现 {len(found)} 个已登录容器。说明系统里残留了旧的 App 数据，")
+        print("    看板里填的指纹可能不是 App 当前真正在用的那一个。")
+        print()
+
+    for container, plist_path, login in found:
         dx = read_dx(container)
+        ident = read_identity_keys(plist_path)
         print("=" * 64)
         print(f"容器      {os.path.basename(container)}")
+        print(f"容器创建  {container_birth(container)}   ← 重装后这个时间没变，就说明容器被复用了")
         print(f"lmId      {login.get('lmId', '?')}")
         print(f"token     {login['token']}")
         print(f"指纹      {dx or '（没读到，App 里打开一次签到页再试）'}")
+        if ident:
+            for key, val in ident.items():
+                shown = val if key == "MAUserDeviceIdKey" else f"{val[:16]}…（已加密）"
+                print(f"身份源    {key} = {shown}")
+        else:
+            print("身份源    （plist 里没有顶象键，指纹可能来自更外层的 IDFV）")
         print()
         print("填进看板的信息：")
         print(json.dumps({"token": login["token"], "lmId": login.get("lmId"), "dx_token": dx},
                          ensure_ascii=False, indent=2))
         print()
-        print("注意：每个账号必须用不同的指纹，共用同一指纹会触发风控。")
-        print("      重装 App 会生成新指纹——装好后重新登录该账号，再跑一次本脚本取新值。")
-    if not found:
-        print("没找到已登录的龙湖 App。确认 App 在本机登录过，路径：", PREFS)
-        return 1
+
+    print("注意：每个账号必须用不同的指纹，共用同一指纹会触发风控。")
+    print("      换指纹 = 让容器重建，不是点一下重装：")
+    print("        python tools/reset_dx_identity.py --rebuild")
     return 0
 
 
