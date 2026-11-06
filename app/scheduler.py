@@ -143,27 +143,27 @@ def _plan_slot(account: dict, entry: str, slot: dict, settings: dict) -> datetim
         return retry_at
 
     planned = _parse_iso(slot.get("plan_at"))
-    if planned and slot.get("plan_date") == today and planned.date() == now.date():
+    done_today = slot.get("last_date") == today
+    if (not done_today and planned and slot.get("plan_date") == today
+            and planned.date() == now.date()):
         return planned
 
     hour, minute, jitter = _config(settings, account, entry)
     start = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     end = start + timedelta(minutes=jitter)
 
-    done_today = (slot.get("last_date") == today
-                  or (account.get("last_run_at") or "")[:10] == today)
-
-    if now >= end:
-        if done_today:
-            start += timedelta(days=1)
-            end += timedelta(days=1)
-            base = start
-        else:
-            # 窗口已经过了但今天还没跑（比如刚部署、或机器睡醒了）：
-            # 一分钟后就补一次，别把今天整天丢掉
-            when = now + timedelta(seconds=60)
-            db.save_slot(account["id"], entry, plan_date=today, plan_at=when.isoformat())
-            return when
+    # 只看本入口自己的完成标记。不能用账号的 last_run_at——它被任一入口的
+    # 执行刷新，会让后跑的那个入口误以为今天已经签过而整轮跳过。
+    if done_today:
+        start += timedelta(days=1)
+        end += timedelta(days=1)
+        base = start
+    elif now >= end:
+        # 窗口已经过了但今天还没跑（比如刚部署、或机器睡醒了）：
+        # 一分钟后就补一次，别把今天整天丢掉
+        when = now + timedelta(seconds=60)
+        db.save_slot(account["id"], entry, plan_date=today, plan_at=when.isoformat())
+        return when
     elif now <= start:
         base = start
     else:

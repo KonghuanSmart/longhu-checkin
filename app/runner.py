@@ -272,7 +272,10 @@ def run_account(account: dict, do_checkin: bool = True,
             result["error"] = result["error"] or str(exc)
             db.add_log(acc_id, acc_name, "query", "fail", str(exc))
 
-    db.update_account(acc_id, last_run_at=db.now_iso())
+    # last_run_at 只由小程序入口刷新：卡片上的「今日状态」是按这个字段判断
+    # 有没有跑过的，APP 入口单独跑时不该改动它。
+    if "mini" in wanted:
+        db.update_account(acc_id, last_run_at=db.now_iso())
 
     days = days_left(db.get_account(acc_id).get("expire_at"))
     result["days_left"] = days
