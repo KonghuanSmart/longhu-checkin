@@ -26,7 +26,8 @@ STATIC_DIR = BASE_DIR / "static"
 async def lifespan(_: FastAPI):
     db.init()
     scheduler.start()
-    logger.info("服务已启动，签到窗口 %s", scheduler.window_text())
+    logger.info("服务已启动，签到窗口：小程序 %s，APP %s",
+                scheduler.window_text("mini"), scheduler.window_text("app"))
     yield
 
 
@@ -47,7 +48,11 @@ def index():
 # 账号
 # --------------------------------------------------------------------------
 
-def _decorate(account: dict, usage: dict[str, list[dict]] | None = None) -> dict:
+def _decorate(account: dict, usage: dict[str, list[dict]] | None = None,
+              settings: dict | None = None,
+              next_runs: dict[str, str] | None = None) -> dict:
+    settings = settings if settings is not None else db.get_settings()
+    next_runs = next_runs or {}
     item = dict(account)
     for key in ("token", "user_agent", "api_key", "dx_token"):  # 敏感字段不外发
         item.pop(key, None)
@@ -67,13 +72,26 @@ def _decorate(account: dict, usage: dict[str, list[dict]] | None = None) -> dict
     item["dx_shared_with"] = [a["name"] for a in shared]
     item["dx_conflict"] = any(a["id"] < account["id"] for a in shared)
     item["days_left"] = runner.days_left(account.get("expire_at"))
+    # 两个入口各自的窗口：账号自定义优先，否则跟随全局
+    item["mini_time"] = (account.get("mini_time") or "").strip()
+    item["app_time"] = (account.get("app_time") or "").strip()
+    item["windows"] = {
+        entry: scheduler.account_window(account, entry, settings)
+        for entry in db.SLOT_ENTRIES
+    }
+    item["next_runs"] = {
+        entry: next_runs.get(f"{account['id']}:{entry}", "")
+        for entry in db.SLOT_ENTRIES
+    }
     return item
 
 
 @app.get("/api/accounts")
 def api_accounts():
     usage = db.dx_usage()
-    return [_decorate(acc, usage) for acc in db.list_accounts()]
+    settings = db.get_settings()
+    next_runs = scheduler.next_run_map()
+    return [_decorate(acc, usage, settings, next_runs) for acc in db.list_accounts()]
 
 
 @app.post("/api/accounts/bind")
@@ -238,12 +256,16 @@ def api_overview():
             status = acc.get("last_status") or ""
             stats[status if status in stats else "fail"] += 1
 
+    settings = db.get_settings()
     return {
         "total": len(accounts),
         "stats": stats,
         "min_days": min_days,
         "next_run": scheduler.next_run_text(),
-        "checkin_time": db.get_settings().get("checkin_time", "08:05"),
+        "checkin_time": settings.get("checkin_time", "08:00"),
+        "app_checkin_time": settings.get("app_checkin_time", "09:30"),
+        "window": scheduler.window_text("mini"),
+        "app_window": scheduler.window_text("app"),
     }
 
 
@@ -258,11 +280,38 @@ def api_get_settings():
     return {
         "checkin_time": data.get("checkin_time", "08:00"),
         "checkin_jitter": data.get("checkin_jitter", "60"),
-        "window": scheduler.window_text(),
+        "app_checkin_time": data.get("app_checkin_time", "09:30"),
+        "app_checkin_jitter": data.get("app_checkin_jitter", "60"),
+        "window": scheduler.window_text("mini"),
+        "app_window": scheduler.window_text("app"),
         "webhook_url": data.get("webhook_url", ""),
         "app_checkin_mode": data.get("app_checkin_mode", "manual"),
         "next_run": scheduler.next_run_text(),
     }
+
+
+def _parse_time_field(value: str, label: str) -> str:
+    try:
+        hour, minute = value.strip().split(":")
+        assert 0 <= int(hour) <= 23 and 0 <= int(minute) <= 59
+    except Exception:
+        raise HTTPException(400, f"{label}格式应为 HH:MM") from None
+    return f"{int(hour):02d}:{int(minute):02d}"
+
+
+def _check_gap(mini_time: str, app_time: str):
+    """两个入口不要设成同一时刻——分时签到就是为了不连着打。"""
+    def minutes(text: str) -> int:
+        hour, minute = text.split(":")
+        return int(hour) * 60 + int(minute)
+
+    diff = abs(minutes(mini_time) - minutes(app_time))
+    if min(diff, 1440 - diff) < 5:
+        raise HTTPException(
+            400,
+            "小程序和 APP 的时间至少错开 5 分钟——两个入口同一时刻连着打，"
+            "等于没有分开排期。",
+        )
 
 
 @app.post("/api/settings")
@@ -270,22 +319,27 @@ def api_save_settings(
     checkin_time: str = Form(...),
     webhook_url: str = Form(""),
     checkin_jitter: str | None = Form(None),
+    app_checkin_time: str | None = Form(None),
+    app_checkin_jitter: str | None = Form(None),
     app_checkin_mode: str | None = Form(None),
 ):
-    try:
-        hour, minute = checkin_time.split(":")
-        assert 0 <= int(hour) <= 23 and 0 <= int(minute) <= 59
-    except Exception:
-        raise HTTPException(400, "时间格式应为 HH:MM") from None
+    mini_time = _parse_time_field(checkin_time, "小程序时间")
+    app_time = _parse_time_field(app_checkin_time or db.get_settings().get("app_checkin_time", "09:30"),
+                                 "APP 时间")
+    _check_gap(mini_time, app_time)
 
-    values = {"checkin_time": checkin_time, "webhook_url": webhook_url.strip()}
-    if checkin_jitter is not None and checkin_jitter.strip() != "":
+    values = {"checkin_time": mini_time, "webhook_url": webhook_url.strip(),
+              "app_checkin_time": app_time}
+    for field, key, label in ((checkin_jitter, "checkin_jitter", "随机浮动"),
+                              (app_checkin_jitter, "app_checkin_jitter", "APP 随机浮动")):
+        if field is None or field.strip() == "":
+            continue
         try:
-            jitter = int(float(checkin_jitter))
+            jitter = int(float(field))
             assert 0 <= jitter <= 1439
         except Exception:
-            raise HTTPException(400, "随机浮动应为 0–1439 之间的分钟数") from None
-        values["checkin_jitter"] = str(jitter)
+            raise HTTPException(400, f"{label}应为 0–1439 之间的分钟数") from None
+        values[key] = str(jitter)
 
     if app_checkin_mode is not None and app_checkin_mode.strip() != "":
         mode = app_checkin_mode.strip().lower()
@@ -297,9 +351,38 @@ def api_save_settings(
     scheduler.reschedule()
     return {
         "ok": True,
-        "window": scheduler.window_text(),
+        "window": scheduler.window_text("mini"),
+        "app_window": scheduler.window_text("app"),
         "next_run": scheduler.next_run_text(),
     }
+
+
+@app.post("/api/accounts/{account_id}/schedule")
+def api_set_schedule(account_id: int, mini_time: str = Form(""),
+                     app_time: str = Form("")):
+    """单账号自定义两个入口的时间。留空表示跟随全局设置。"""
+    account = db.get_account(account_id)
+    if not account:
+        raise HTTPException(404, "账号不存在")
+
+    mini_value = _parse_time_field(mini_time, "小程序时间") if mini_time.strip() else ""
+    app_value = _parse_time_field(app_time, "APP 时间") if app_time.strip() else ""
+
+    settings = db.get_settings()
+    effective = dict(account, mini_time=mini_value, app_time=app_value)
+    _check_gap(
+        scheduler.effective_start(effective, "mini", settings),
+        scheduler.effective_start(effective, "app", settings),
+    )
+
+    db.update_account(account_id, mini_time=mini_value or None, app_time=app_value or None)
+    for entry in db.SLOT_ENTRIES:
+        db.clear_slot_plan(account_id, entry)
+    scheduler.reschedule()
+    db.add_log(account_id, account["name"], "schedule", "ok",
+               f"签到时间已更新：小程序 {mini_value or '跟随全局'}，"
+               f"APP {app_value or '跟随全局'}")
+    return {"ok": True}
 
 
 @app.get("/api/health")

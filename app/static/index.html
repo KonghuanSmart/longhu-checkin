@@ -61,6 +61,7 @@
   .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; margin-bottom: 15px; }
   .card-name { font-size: 16px; font-weight: 600; }
   .card-sub { color: var(--dim); font-size: 12px; margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
+  .card-sched { color: #7f8b9d; font-size: 12px; margin-top: 4px; }
 
   .badge { font-size: 11.5px; padding: 3px 9px; border-radius: 20px; white-space: nowrap; border: 1px solid transparent; }
   .b-ok { color: var(--green); background: #12251a; border-color: #1d3a28; }
@@ -208,16 +209,25 @@
 <div class="modal" id="modalSettings">
   <div class="dialog">
     <h3>设置</h3>
-    <div class="hint">每天在下面的窗口里随机挑一个时刻，自动跑一轮：续期 + 签到 + 刷新状态。</div>
+    <div class="hint">两个入口分开排期，各在自己的窗口里随机挑一个时刻跑：续期 + 签到 + 刷新状态。</div>
     <div class="field">
-      <label>签到窗口起点</label>
+      <label>小程序入口 · 窗口起点</label>
       <input type="time" id="setTime">
     </div>
     <div class="field">
-      <label>随机浮动（分钟，0 = 固定时刻）</label>
+      <label>小程序入口 · 随机浮动（分钟，0 = 固定时刻）</label>
       <input type="number" id="setJitter" min="0" max="1439" step="5" placeholder="60">
     </div>
     <div class="tips" id="setWindowTip">实际执行时间 = 起点 + 0～N 分钟内的随机值，每天都不同，避免固定时刻被风控识别。默认起点 08:00、浮动 60 分钟，即每天落在 08:00–09:00 之间。</div>
+    <div class="field">
+      <label>APP 入口 · 窗口起点</label>
+      <input type="time" id="setAppTime">
+    </div>
+    <div class="field">
+      <label>APP 入口 · 随机浮动（分钟）</label>
+      <input type="number" id="setAppJitter" min="0" max="1439" step="5" placeholder="60">
+    </div>
+    <div class="tips" id="setAppWindowTip">APP 端默认排在 09:30 之后，和小程序入口错开，避免同一设备两个活动连着命中。同一账号的两个时间至少相差 5 分钟。</div>
     <div class="field">
       <label>告警推送地址（Bark / 企业微信 / 钉钉，可留空）</label>
       <input type="text" id="setWebhook" placeholder="https://api.day.app/你的DeviceKey">
@@ -235,6 +245,27 @@
     <div class="dialog-foot">
       <button id="btnCancelSet" class="ghost">取消</button>
       <button id="btnSaveSet" class="primary">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 单账号签到时间 -->
+<div class="modal" id="modalSchedule">
+  <div class="dialog">
+    <h3>签到时间</h3>
+    <div class="hint" id="schedName"></div>
+    <div class="field">
+      <label>小程序入口 · 窗口起点（留空 = 跟随全局）</label>
+      <input type="time" id="schedMini">
+    </div>
+    <div class="field">
+      <label>APP 入口 · 窗口起点（留空 = 跟随全局）</label>
+      <input type="time" id="schedApp">
+    </div>
+    <div class="tips" id="schedTip">两个入口分开跑，时间至少相差 5 分钟。随机浮动沿用在「设置」里配的值。</div>
+    <div class="dialog-foot">
+      <button id="btnCancelSched" class="ghost">取消</button>
+      <button id="btnSaveSched" class="primary">保存</button>
     </div>
   </div>
 </div>
@@ -313,6 +344,7 @@ function renderAccounts() {
         <div>
           <div class="card-name">${escapeHtml(a.name)}</div>
           <div class="card-sub">${a.token_mask || ""} · <span style="color:${dxColor}" title="${escapeHtml(dxTitle)}">指纹${dxLabel}</span></div>
+          <div class="card-sched">小程序 ${escapeHtml((a.windows && a.windows.mini) || "—")} · APP ${escapeHtml((a.windows && a.windows.app) || "—")}</div>
           ${a.dx_conflict ? `<div style="margin-top:6px;font-size:12px;color:var(--red)">已暂停签到：与「${escapeHtml(sharedWith)}」共用指纹，重装 App 换新指纹</div>` : ""}
         </div>
         <span class="badge ${cls}">${label}</span>
@@ -326,6 +358,7 @@ function renderAccounts() {
       <div class="bar ${barCls}"><i style="width:${pct}%"></i></div>
       <div class="card-foot">
         <div class="msg" title="${escapeHtml(a.last_message || "")}">${escapeHtml(a.last_message || "尚未执行")}</div>
+        <button class="small" data-sched="${a.id}">时间</button>
         <button class="small" data-dx="${a.id}">${a.has_dx ? "换指纹" : "补指纹"}</button>
         <button class="small" data-run="${a.id}">立即签到</button>
         <button class="small danger" data-del="${a.id}">删除</button>
@@ -430,6 +463,18 @@ $("accounts").addEventListener("click", async (ev) => {
   const runId = ev.target.dataset.run;
   const delId = ev.target.dataset.del;
   const dxId = ev.target.dataset.dx;
+  const schedId = ev.target.dataset.sched;
+  if (schedId) {
+    const acc = accounts.find((a) => String(a.id) === String(schedId));
+    if (!acc) return;
+    $("schedName").textContent = acc.name;
+    $("schedMini").value = acc.mini_time || "";
+    $("schedApp").value = acc.app_time || "";
+    $("schedTip").textContent =
+      `两个入口分开跑，时间至少相差 5 分钟。留空 = 跟随全局（小程序 ${acc.windows && acc.windows.mini}，APP ${acc.windows && acc.windows.app}）。`;
+    $("modalSchedule").dataset.id = schedId;
+    $("modalSchedule").classList.add("show");
+  }
   if (dxId) {
     const value = prompt(
       "粘贴 App 内的顶象设备指纹（形如 6ae93a6cUDMfhHgK6eYXWjqtu1qMG9bAJdij8Er1）。\n" +
@@ -478,10 +523,10 @@ $("accounts").addEventListener("click", async (ev) => {
   }
 });
 
-function windowLabel() {
-  const text = $("setTime").value || "08:00";
+function windowLabel(timeId, jitterId) {
+  const text = $(timeId).value || "08:00";
   const [h, m] = text.split(":").map(Number);
-  const jitter = Math.max(0, Math.min(1439, parseInt($("setJitter").value || "0", 10) || 0));
+  const jitter = Math.max(0, Math.min(1439, parseInt($(jitterId).value || "0", 10) || 0));
   const pad = (n) => String(n).padStart(2, "0");
   const start = `${pad(h)}:${pad(m)}`;
   if (!jitter) return start;
@@ -490,7 +535,9 @@ function windowLabel() {
 }
 function updateWindowTip() {
   $("setWindowTip").textContent =
-    `实际执行时间 = 起点 + 0～N 分钟内的随机值，每天都不同，避免固定时刻被风控识别。当前窗口 ${windowLabel()}。`;
+    `实际执行时间 = 起点 + 0～N 分钟内的随机值，每天都不同，避免固定时刻被风控识别。当前窗口 ${windowLabel("setTime", "setJitter")}。`;
+  $("setAppWindowTip").textContent =
+    `APP 端默认排在 09:30 之后，和小程序入口错开。当前窗口 ${windowLabel("setAppTime", "setAppJitter")}。`;
 }
 
 $("btnSettings").onclick = async () => {
@@ -498,6 +545,8 @@ $("btnSettings").onclick = async () => {
     const s = await api("/api/settings");
     $("setTime").value = s.checkin_time || "08:00";
     $("setJitter").value = s.checkin_jitter ?? "60";
+    $("setAppTime").value = s.app_checkin_time || "09:30";
+    $("setAppJitter").value = s.app_checkin_jitter ?? "60";
     $("setWebhook").value = s.webhook_url || "";
     $("setAppMode").value = s.app_checkin_mode || "manual";
     updateWindowTip();
@@ -506,20 +555,39 @@ $("btnSettings").onclick = async () => {
     toast(e.message, true);
   }
 };
-$("setTime").oninput = updateWindowTip;
-$("setJitter").oninput = updateWindowTip;
+["setTime", "setJitter", "setAppTime", "setAppJitter"].forEach((id) => {
+  $(id).oninput = updateWindowTip;
+});
 $("btnCancelSet").onclick = () => $("modalSettings").classList.remove("show");
 
 $("btnSaveSet").onclick = async () => {
   const fd = new FormData();
   fd.append("checkin_time", $("setTime").value || "08:00");
   fd.append("checkin_jitter", $("setJitter").value.trim());
+  fd.append("app_checkin_time", $("setAppTime").value || "09:30");
+  fd.append("app_checkin_jitter", $("setAppJitter").value.trim());
   fd.append("webhook_url", $("setWebhook").value.trim());
   fd.append("app_checkin_mode", $("setAppMode").value);
   try {
     await api("/api/settings", { method: "POST", body: fd });
     $("modalSettings").classList.remove("show");
     toast("设置已保存");
+    await loadAll();
+  } catch (e) {
+    toast(e.message, true);
+  }
+};
+
+$("btnCancelSched").onclick = () => $("modalSchedule").classList.remove("show");
+$("btnSaveSched").onclick = async () => {
+  const id = $("modalSchedule").dataset.id;
+  const fd = new FormData();
+  fd.append("mini_time", $("schedMini").value || "");
+  fd.append("app_time", $("schedApp").value || "");
+  try {
+    await api(`/api/accounts/${id}/schedule`, { method: "POST", body: fd });
+    $("modalSchedule").classList.remove("show");
+    toast("时间已保存，排期已重算");
     await loadAll();
   } catch (e) {
     toast(e.message, true);

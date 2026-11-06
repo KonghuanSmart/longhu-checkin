@@ -28,8 +28,24 @@ CREATE TABLE IF NOT EXISTS accounts (
     last_status   TEXT DEFAULT '',
     last_message  TEXT DEFAULT '',
     enabled       INTEGER DEFAULT 1,
+    mini_time     TEXT,
+    app_time      TEXT,
     created_at    TEXT,
     updated_at    TEXT
+);
+
+-- 分时签到：每个账号的每个入口（小程序 / APP）各占一行，独立排期与重试。
+-- 之前所有账号两个入口在同一轮里连着跑（相隔 1 秒），容易被判成机器行为。
+CREATE TABLE IF NOT EXISTS slots (
+    account_id   INTEGER NOT NULL,
+    entry        TEXT    NOT NULL,
+    last_date    TEXT DEFAULT '',
+    plan_date    TEXT DEFAULT '',
+    plan_at      TEXT DEFAULT '',
+    retry_at     TEXT DEFAULT '',
+    retry_count  INTEGER DEFAULT 0,
+    updated_at   TEXT,
+    PRIMARY KEY (account_id, entry)
 );
 
 CREATE TABLE IF NOT EXISTS logs (
@@ -51,8 +67,12 @@ CREATE INDEX IF NOT EXISTS idx_logs_acc ON logs(account_id, id DESC);
 """
 
 DEFAULT_SETTINGS = {
+    # 小程序入口
     "checkin_time": "08:00",
     "checkin_jitter": "60",
+    # APP 专享入口：默认比小程序晚一个半小时，避免两个入口同一时刻连着打
+    "app_checkin_time": "09:30",
+    "app_checkin_jitter": "60",
     "last_run_date": "",
     "retry_at": "",
     "retry_count": "0",
@@ -94,7 +114,12 @@ def init():
 # 建表之后新增的列：老库用 ALTER TABLE 补，新库由 SCHEMA 直接带上
 MIGRATIONS = {
     # 顶象设备指纹。App 内生成的才被认可，udid/c1 拿到的 40 位 token 会被判风险
-    "accounts": {"dx_token": "ALTER TABLE accounts ADD COLUMN dx_token TEXT"},
+    "accounts": {
+        "dx_token": "ALTER TABLE accounts ADD COLUMN dx_token TEXT",
+        # 单账号自定义的两个入口时间，留空表示跟随全局设置
+        "mini_time": "ALTER TABLE accounts ADD COLUMN mini_time TEXT",
+        "app_time": "ALTER TABLE accounts ADD COLUMN app_time TEXT",
+    },
 }
 
 
@@ -132,14 +157,15 @@ def create_account(data: dict) -> int:
             """INSERT INTO accounts
                (name, token, user_agent, api_key, dx_token, bu_code, channel,
                 growth_value, level_name, balance, nickname,
-                expire_at, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                mini_time, app_time, expire_at, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 data["name"], data["token"], data.get("user_agent"), data.get("api_key"),
                 data.get("dx_token"),
                 data.get("bu_code", "C20400"), data.get("channel", "C2"),
                 data.get("growth_value", 0), data.get("level_name", ""),
                 data.get("balance", 0), data.get("nickname", ""),
+                data.get("mini_time"), data.get("app_time"),
                 data.get("expire_at"), ts, ts,
             ),
         )
@@ -162,6 +188,54 @@ def delete_account(account_id: int):
     with connect() as conn:
         conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
         conn.execute("DELETE FROM logs WHERE account_id = ?", (account_id,))
+        conn.execute("DELETE FROM slots WHERE account_id = ?", (account_id,))
+
+
+# --------------------------------------------------------------------------
+# slots：分时签到的排期状态（每个账号 × 每个入口一行）
+# --------------------------------------------------------------------------
+
+SLOT_ENTRIES = ("mini", "app")
+
+
+def list_slots() -> dict[tuple[int, str], dict]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM slots").fetchall()
+    return {(row["account_id"], row["entry"]): dict(row) for row in rows}
+
+
+def get_slot(account_id: int, entry: str) -> dict:
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM slots WHERE account_id = ? AND entry = ?",
+            (account_id, entry),
+        ).fetchone()
+    if row:
+        return dict(row)
+    return {"account_id": account_id, "entry": entry, "last_date": "",
+            "plan_date": "", "plan_at": "", "retry_at": "", "retry_count": 0}
+
+
+def save_slot(account_id: int, entry: str, **fields):
+    """按需更新排期字段；行不存在就插一条再更新。"""
+    current = get_slot(account_id, entry)
+    fields["updated_at"] = now_iso()
+    with connect() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO slots(account_id, entry, updated_at) VALUES (?,?,?)",
+            (account_id, entry, fields["updated_at"]),
+        )
+        sets = ", ".join(f"{key} = ?" for key in fields)
+        conn.execute(
+            f"UPDATE slots SET {sets} WHERE account_id = ? AND entry = ?",
+            (*fields.values(), account_id, entry),
+        )
+    current.update(fields)
+
+
+def clear_slot_plan(account_id: int, entry: str):
+    """清掉今天的排期，让调度器按新设置重新挑时间。"""
+    save_slot(account_id, entry, plan_date="", plan_at="", retry_at="", retry_count=0)
 
 
 def dx_usage() -> dict[str, list[dict]]:

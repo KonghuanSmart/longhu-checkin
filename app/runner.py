@@ -139,13 +139,18 @@ def _app_entry(account: dict, item: dict, mode: str) -> tuple[str, str]:
 
 
 def run_account(account: dict, do_checkin: bool = True,
-                app_mode: str | None = None) -> dict:
+                app_mode: str | None = None,
+                entries: tuple[str, ...] | None = None,
+                with_profile: bool = True) -> dict:
     """执行单个账号的完整流程，返回可直接给前端用的结果。
 
     app_mode 为 None 时取设置里的 app_checkin_mode。
+    entries 为 None 时两个入口都跑；只给一个入口时用于分时排期。
+    with_profile=False 时跳过资料刷新，省一次请求（分时排期的第二个入口用）。
     """
     acc_id = account["id"]
     acc_name = account["name"]
+    wanted = set(entries) if entries else {item["key"] for item in longhu.ACTIVITIES}
     result = {
         "account_id": acc_id,
         "name": acc_name,
@@ -198,6 +203,8 @@ def run_account(account: dict, do_checkin: bool = True,
     extra = []
     if do_checkin and not dx_block:
         for item in longhu.ACTIVITIES:
+            if item["key"] not in wanted:
+                continue
             is_main = item["key"] == "mini"
             label = "" if is_main else "APP "
             try:
@@ -222,17 +229,24 @@ def run_account(account: dict, do_checkin: bool = True,
                               "status": status, "message": message})
 
         result["extra_signs"] = extra
+        if "mini" not in wanted and extra:
+            # 只跑 APP 入口时，把结果挂到 checkin_status 方便排期判断，
+            # 但不回写账号的 last_status——那是主签到（小程序）的状态标识。
+            result["checkin_status"] = extra[0]["status"]
+            result["checkin_message"] = extra[0]["message"]
         failed_main = result["checkin_status"] == "fail"
         if failed_main:
             # 签到失败一律告警。之前只在「续期也失败」时才推，导致签到被拒
             # （例如上游返回「网络故障，请稍后再试」）时完全静默。
             if not ok:
                 tail = "该账号需要重新导入凭据。"
+                refresh_text = f"失败（{payload}）"
             else:
                 tail = "将按排程在当天内自动重试。"
+                refresh_text = "成功"
             notify(
                 f"【龙湖签到】{acc_name} 失败\n"
-                f"续期: {payload}\n签到: {result['checkin_message']}\n{tail}"
+                f"续期: {refresh_text}\n签到: {result['checkin_message']}\n{tail}"
             )
 
     if do_checkin and dx_block:
@@ -243,19 +257,20 @@ def run_account(account: dict, do_checkin: bool = True,
         db.update_account(acc_id, last_status="conflict", last_message=dx_block)
 
     # ---- 3. 刷新资料 ----
-    try:
-        profile = longhu.fetch_profile(account)
-        result["profile"] = profile
-        db.update_account(
-            acc_id,
-            growth_value=profile.get("growth_value", 0),
-            level_name=profile.get("level_name", ""),
-            balance=profile.get("balance", 0),
-            nickname=profile.get("nickname", ""),
-        )
-    except longhu.LonghuError as exc:
-        result["error"] = result["error"] or str(exc)
-        db.add_log(acc_id, acc_name, "query", "fail", str(exc))
+    if with_profile:
+        try:
+            profile = longhu.fetch_profile(account)
+            result["profile"] = profile
+            db.update_account(
+                acc_id,
+                growth_value=profile.get("growth_value", 0),
+                level_name=profile.get("level_name", ""),
+                balance=profile.get("balance", 0),
+                nickname=profile.get("nickname", ""),
+            )
+        except longhu.LonghuError as exc:
+            result["error"] = result["error"] or str(exc)
+            db.add_log(acc_id, acc_name, "query", "fail", str(exc))
 
     db.update_account(acc_id, last_run_at=db.now_iso())
 
