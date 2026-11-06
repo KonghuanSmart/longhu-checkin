@@ -158,7 +158,13 @@ async def api_bind(
     if profile is None:
         raise HTTPException(400, f"凭据校验失败：{verify_error or '未知原因'}，请重新抓取")
 
-    final_name = (name or "").strip() or profile.get("nickname") or f"龙湖账号 {len(db.list_accounts()) + 1}"
+    # 默认名用脱敏手机号：昵称一律是「珑珠用户」，多账号根本分不出来。
+    final_name = (
+        (name or "").strip()
+        or profile.get("phone")
+        or profile.get("nickname")
+        or f"龙湖账号 {len(db.list_accounts()) + 1}"
+    )
 
     account_id = db.create_account({
         "name": final_name,

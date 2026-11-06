@@ -424,6 +424,9 @@ def fetch_profile(account: dict) -> dict:
         "growth_value": int(data.get("growthValue") or 0),
         "level_name": data.get("levelName") or "",
         "nickname": data.get("nickName") or data.get("nickname") or "",
+        # 脱敏手机号（形如 189****8375）。昵称对所有账号都是「珑珠用户」，
+        # 只有手机号能把多个账号区分开，所以默认用它当账号显示名。
+        "phone": data.get("desensitizePhone") or "",
     }
 
     balance_headers = dict(headers)
